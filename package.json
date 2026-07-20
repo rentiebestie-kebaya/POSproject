@@ -8,22 +8,30 @@
     "start": "next start",
     "preview": "opennextjs-cloudflare build && opennextjs-cloudflare preview",
     "deploy": "opennextjs-cloudflare build && opennextjs-cloudflare deploy",
-    "cf-typegen": "wrangler types --env-interface CloudflareEnv cloudflare-env.d.ts"
+    "cf-typegen": "wrangler types --env-interface CloudflareEnv cloudflare-env.d.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "auth:generate": "npx @better-auth/cli@latest generate --config src/lib/auth.generate.ts --output docs/generated/better-auth-schema.sql -y"
   },
   "dependencies": {
     "@opennextjs/cloudflare": "^1.20.1",
+    "better-auth": "^1.6.23",
     "lucide-react": "^0.454.0",
     "next": "^15.3.4",
     "react": "^19.1.0",
     "react-dom": "^19.1.0"
   },
   "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.18.6",
     "@tailwindcss/postcss": "^4.0.0",
+    "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^22.10.0",
     "@types/react": "^19.1.0",
     "@types/react-dom": "^19.1.0",
+    "better-sqlite3": "^12.11.1",
     "tailwindcss": "^4.0.0",
     "typescript": "^5.6.3",
+    "vitest": "^4.1.10",
     "wrangler": "^4.112.0"
   }
 }

@@ -1,6 +1,47 @@
+-- RENTIE clean schema baseline (ADR-0001, ADR-0005).
+--
+-- This is the single, collapsed baseline: better-auth's generated auth tables
+-- folded together with the hand-authored domain tables. Pre-launch we reset D1
+-- (local + remote) and apply this one migration; the moment the design partner
+-- has real data, this baseline freezes and all further changes become
+-- forward-only `wrangler d1 migrations`.
+--
+-- Identity model: a single `user` table (better-auth) carries `tenant_id` and the
+-- domain `role` (owner | cashier | fitting). There is NO standalone app `users`
+-- table. The auth-table section below is emitted verbatim by
+-- `@better-auth/cli generate` (Kysely/SQLite adapter) from src/lib/auth.generate.ts
+-- so a future regenerate diffs cleanly against it.
+
 PRAGMA foreign_keys = ON;
 
-CREATE TABLE IF NOT EXISTS tenants (
+-- ---------------------------------------------------------------------------
+-- better-auth tables — a verbatim copy of docs/generated/better-auth-schema.sql
+-- (produced by `npm run auth:generate`). Do NOT hand-edit this block: change
+-- src/lib/auth.generate.ts, regenerate, and reconcile the two here.
+-- ---------------------------------------------------------------------------
+
+create table "user" ("id" text not null primary key, "name" text not null, "email" text not null unique, "emailVerified" integer not null, "image" text, "createdAt" date not null, "updatedAt" date not null, "role" text not null, "banned" integer, "banReason" text, "banExpires" date, "tenant_id" text not null);
+
+create table "session" ("id" text not null primary key, "expiresAt" date not null, "token" text not null unique, "createdAt" date not null, "updatedAt" date not null, "ipAddress" text, "userAgent" text, "userId" text not null references "user" ("id") on delete cascade, "impersonatedBy" text);
+
+create table "account" ("id" text not null primary key, "accountId" text not null, "providerId" text not null, "userId" text not null references "user" ("id") on delete cascade, "accessToken" text, "refreshToken" text, "idToken" text, "accessTokenExpiresAt" date, "refreshTokenExpiresAt" date, "scope" text, "password" text, "createdAt" date not null, "updatedAt" date not null);
+
+create table "verification" ("id" text not null primary key, "identifier" text not null, "value" text not null, "expiresAt" date not null, "createdAt" date not null, "updatedAt" date not null);
+
+create index "session_userId_idx" on "session" ("userId");
+
+create index "account_userId_idx" on "account" ("userId");
+
+create index "verification_identifier_idx" on "verification" ("identifier");
+
+-- Scope users to a tenant for fast per-shop staff lookups.
+CREATE INDEX idx_user_tenant_id ON "user" ("tenant_id");
+
+-- ---------------------------------------------------------------------------
+-- Domain tables
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE tenants (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
   subdomain TEXT NOT NULL UNIQUE,
@@ -8,22 +49,17 @@ CREATE TABLE IF NOT EXISTS tenants (
   whatsapp TEXT NOT NULL,
   booking_deposit_amount INTEGER NOT NULL DEFAULT 0,
   booking_deposit_policy TEXT NOT NULL CHECK (booking_deposit_policy IN ('non_refundable', 'refundable')),
+  plan TEXT NOT NULL DEFAULT 'free' CHECK (plan IN ('free', 'starter', 'pro')),
+  billing_status TEXT NOT NULL DEFAULT 'active' CHECK (billing_status IN ('active', 'pending', 'past_due', 'cancelled')),
+  status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'suspended')),
+  onboarding_status TEXT NOT NULL DEFAULT 'incomplete' CHECK (onboarding_status IN ('incomplete', 'complete')),
+  logo_url TEXT,
+  limit_overrides_json TEXT NOT NULL DEFAULT '{}',
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE TABLE IF NOT EXISTS users (
-  id TEXT PRIMARY KEY,
-  tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
-  name TEXT NOT NULL,
-  role TEXT NOT NULL CHECK (role IN ('owner', 'cashier', 'fitting')),
-  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE INDEX IF NOT EXISTS idx_users_tenant_id ON users(tenant_id);
-
-CREATE TABLE IF NOT EXISTS inventory_items (
+CREATE TABLE inventory_items (
   id TEXT PRIMARY KEY,
   tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
   name TEXT NOT NULL,
@@ -53,10 +89,10 @@ CREATE TABLE IF NOT EXISTS inventory_items (
   UNIQUE (tenant_id, inventory_code)
 );
 
-CREATE INDEX IF NOT EXISTS idx_inventory_items_tenant_id ON inventory_items(tenant_id);
-CREATE INDEX IF NOT EXISTS idx_inventory_items_status ON inventory_items(tenant_id, status);
+CREATE INDEX idx_inventory_items_tenant_id ON inventory_items(tenant_id);
+CREATE INDEX idx_inventory_items_status ON inventory_items(tenant_id, status);
 
-CREATE TABLE IF NOT EXISTS customers (
+CREATE TABLE customers (
   id TEXT PRIMARY KEY,
   tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
   name TEXT NOT NULL,
@@ -73,10 +109,10 @@ CREATE TABLE IF NOT EXISTS customers (
   UNIQUE (tenant_id, normalized_whatsapp)
 );
 
-CREATE INDEX IF NOT EXISTS idx_customers_tenant_id ON customers(tenant_id);
-CREATE INDEX IF NOT EXISTS idx_customers_whatsapp ON customers(tenant_id, normalized_whatsapp);
+CREATE INDEX idx_customers_tenant_id ON customers(tenant_id);
+CREATE INDEX idx_customers_whatsapp ON customers(tenant_id, normalized_whatsapp);
 
-CREATE TABLE IF NOT EXISTS customer_measurements (
+CREATE TABLE customer_measurements (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   customer_id TEXT NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
   bust INTEGER NOT NULL,
@@ -85,9 +121,9 @@ CREATE TABLE IF NOT EXISTS customer_measurements (
   recorded_at TEXT NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_customer_measurements_customer_id ON customer_measurements(customer_id);
+CREATE INDEX idx_customer_measurements_customer_id ON customer_measurements(customer_id);
 
-CREATE TABLE IF NOT EXISTS bookings (
+CREATE TABLE bookings (
   id TEXT PRIMARY KEY,
   tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
   customer_id TEXT NOT NULL REFERENCES customers(id) ON DELETE RESTRICT,
@@ -101,20 +137,20 @@ CREATE TABLE IF NOT EXISTS bookings (
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE INDEX IF NOT EXISTS idx_bookings_tenant_id ON bookings(tenant_id);
-CREATE INDEX IF NOT EXISTS idx_bookings_dates ON bookings(tenant_id, start_date, end_date);
-CREATE INDEX IF NOT EXISTS idx_bookings_status ON bookings(tenant_id, status);
+CREATE INDEX idx_bookings_tenant_id ON bookings(tenant_id);
+CREATE INDEX idx_bookings_dates ON bookings(tenant_id, start_date, end_date);
+CREATE INDEX idx_bookings_status ON bookings(tenant_id, status);
 
-CREATE TABLE IF NOT EXISTS booking_items (
+CREATE TABLE booking_items (
   booking_id TEXT NOT NULL REFERENCES bookings(id) ON DELETE CASCADE,
   item_id TEXT NOT NULL REFERENCES inventory_items(id) ON DELETE RESTRICT,
   tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
   PRIMARY KEY (booking_id, item_id)
 );
 
-CREATE INDEX IF NOT EXISTS idx_booking_items_item_id ON booking_items(item_id);
+CREATE INDEX idx_booking_items_item_id ON booking_items(item_id);
 
-CREATE TABLE IF NOT EXISTS booking_requests (
+CREATE TABLE booking_requests (
   id TEXT PRIMARY KEY,
   tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
   item_id TEXT NOT NULL REFERENCES inventory_items(id) ON DELETE RESTRICT,
@@ -133,10 +169,10 @@ CREATE TABLE IF NOT EXISTS booking_requests (
   created_at TEXT NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_booking_requests_tenant_id ON booking_requests(tenant_id);
-CREATE INDEX IF NOT EXISTS idx_booking_requests_status ON booking_requests(tenant_id, status);
+CREATE INDEX idx_booking_requests_tenant_id ON booking_requests(tenant_id);
+CREATE INDEX idx_booking_requests_status ON booking_requests(tenant_id, status);
 
-CREATE TABLE IF NOT EXISTS transactions (
+CREATE TABLE transactions (
   id TEXT PRIMARY KEY,
   tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
   booking_id TEXT NOT NULL REFERENCES bookings(id) ON DELETE RESTRICT,
@@ -162,42 +198,22 @@ CREATE TABLE IF NOT EXISTS transactions (
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE INDEX IF NOT EXISTS idx_transactions_tenant_id ON transactions(tenant_id);
-CREATE INDEX IF NOT EXISTS idx_transactions_booking_id ON transactions(booking_id);
-CREATE INDEX IF NOT EXISTS idx_transactions_date ON transactions(tenant_id, date);
+CREATE INDEX idx_transactions_tenant_id ON transactions(tenant_id);
+CREATE INDEX idx_transactions_booking_id ON transactions(booking_id);
+CREATE INDEX idx_transactions_date ON transactions(tenant_id, date);
 
-CREATE TABLE IF NOT EXISTS transaction_items (
+CREATE TABLE transaction_items (
   transaction_id TEXT NOT NULL REFERENCES transactions(id) ON DELETE CASCADE,
   item_id TEXT NOT NULL REFERENCES inventory_items(id) ON DELETE RESTRICT,
   tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
   PRIMARY KEY (transaction_id, item_id)
 );
 
-CREATE INDEX IF NOT EXISTS idx_transaction_items_item_id ON transaction_items(item_id);
+CREATE INDEX idx_transaction_items_item_id ON transaction_items(item_id);
 
-CREATE TABLE IF NOT EXISTS monthly_revenue (
+CREATE TABLE monthly_revenue (
   tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
   month TEXT NOT NULL,
   revenue INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (tenant_id, month)
 );
-
-INSERT OR IGNORE INTO tenants (
-  id,
-  name,
-  subdomain,
-  location,
-  whatsapp,
-  booking_deposit_amount,
-  booking_deposit_policy
-) VALUES
-  ('melati', 'Griya Kebaya Melati', 'melati.rentie.id', 'Kemang, Jakarta Selatan', '+62 812-0000-1234', 150000, 'non_refundable'),
-  ('ayu', 'Ayu Rental', 'ayurental.rentie.id', 'Denpasar, Bali', '+62 813-0000-8899', 100000, 'refundable');
-
-INSERT OR IGNORE INTO users (id, tenant_id, name, role) VALUES
-  ('U01', 'melati', 'Ayu Lestari', 'owner'),
-  ('U02', 'melati', 'Budi Santoso', 'cashier'),
-  ('U03', 'melati', 'Citra Dewi', 'fitting'),
-  ('U04', 'melati', 'Dian Permata', 'cashier'),
-  ('U05', 'ayu', 'Rani Wijaya', 'owner'),
-  ('U06', 'ayu', 'Komang Sri', 'cashier');
