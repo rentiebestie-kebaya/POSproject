@@ -13,6 +13,7 @@ import {
   type KebayaItem,
   type Tenant,
 } from "../data/mock";
+import { rulesForTenant } from "../data/plans";
 
 const inputCls = "w-full rounded-xl border border-black/10 bg-white px-3 py-2.5 text-sm outline-none focus:border-brand-400";
 const labelCls = "mb-1.5 block text-xs font-semibold text-ink-2";
@@ -88,6 +89,7 @@ export default function PublicBooking({ tenantSlug }: { tenantSlug: string }) {
   const { platform, createPublicBookingRequest } = useTenant();
   const tenant = resolveTenant(tenantSlug, platform.tenants);
   const dataset = tenant ? platform.datasets[tenant.id] : undefined;
+  const planRules = tenant ? rulesForTenant(tenant) : undefined;
 
   const [query, setQuery] = useState("");
   const [selectedItemId, setSelectedItemId] = useState("");
@@ -167,6 +169,30 @@ export default function PublicBooking({ tenantSlug }: { tenantSlug: string }) {
           <Link href="/" className="mt-5 inline-flex rounded-full bg-brand-900 px-4 py-2 text-sm font-semibold text-white">
             Back to RENTIE
           </Link>
+        </div>
+      </main>
+    );
+  }
+
+  if (!planRules?.publicBookingEnabled || tenant.status === "suspended") {
+    return (
+      <main className="min-h-screen bg-page px-5 py-10">
+        <div className="mx-auto max-w-xl rounded-2xl border border-hairline bg-white p-6">
+          <div className="flex h-10 w-10 items-center justify-center rounded-full bg-warning/20 text-gold-600">
+            <AlertTriangle size={18} />
+          </div>
+          <h1 className="mt-4 text-xl font-semibold">Booking page is not active</h1>
+          <p className="mt-2 text-sm leading-6 text-ink-2">
+            Public booking is available on Pro. Contact {tenant.name} through WhatsApp for manual rental help.
+          </p>
+          <a
+            href={`https://wa.me/${tenant.whatsapp.replace(/\D/g, "")}`}
+            target="_blank"
+            rel="noreferrer"
+            className="mt-5 inline-flex rounded-full bg-brand-900 px-4 py-2 text-sm font-semibold text-white"
+          >
+            Chat {tenant.name}
+          </a>
         </div>
       </main>
     );

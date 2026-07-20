@@ -3,12 +3,29 @@
 import { useState, type FormEvent } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ArrowLeft, Building2, LogOut, Plus, ShieldCheck, Trash2, Users as UsersIcon } from "lucide-react";
+import { AlertTriangle, ArrowLeft, Building2, LogOut, Plus, ShieldCheck, SlidersHorizontal, Trash2, Users as UsersIcon } from "lucide-react";
 import { Card, Td, Th } from "../components/Ui";
 import { useTenant } from "../data/store";
-import { ROLE_LABEL, formatIDR, type Role } from "../data/mock";
+import {
+  BILLING_STATUS_LABEL,
+  ONBOARDING_STATUS_LABEL,
+  PLAN_LABEL,
+  ROLE_LABEL,
+  STORE_STATUS_LABEL,
+  formatIDR,
+  type BillingStatus,
+  type OnboardingStatus,
+  type Plan,
+  type Role,
+  type StoreStatus,
+} from "../data/mock";
+import { limitText, rulesForTenant } from "../data/plans";
 
 const ROLES = Object.keys(ROLE_LABEL) as Role[];
+const PLANS = Object.keys(PLAN_LABEL) as Plan[];
+const BILLING_STATUSES = Object.keys(BILLING_STATUS_LABEL) as BillingStatus[];
+const STORE_STATUSES = Object.keys(STORE_STATUS_LABEL) as StoreStatus[];
+const ONBOARDING_STATUSES = Object.keys(ONBOARDING_STATUS_LABEL) as OnboardingStatus[];
 
 /** Platform-owner console — manages tenants & users across ALL shops.
     Guarded by its own prototype dev session, separate from staff login. */
@@ -78,11 +95,13 @@ export default function Dev() {
           ))}
         </div>
 
+        <CreateStoreForm />
+
         {/* Tenants */}
         <Card className="mt-6 overflow-hidden">
           <div className="flex items-center gap-2 border-b border-hairline px-5 py-4">
             <Building2 size={15} className="text-ink-3" />
-            <h2 className="text-sm font-semibold">Tenant</h2>
+            <h2 className="text-sm font-semibold">Tenant control</h2>
           </div>
           <div className="overflow-x-auto">
             <table className="w-full">
@@ -90,9 +109,14 @@ export default function Dev() {
                 <tr>
                   <Th>Butik</Th>
                   <Th>Subdomain</Th>
+                  <Th>Plan</Th>
+                  <Th>Billing</Th>
+                  <Th>Status</Th>
+                  <Th>Onboarding</Th>
                   <Th>Outlet</Th>
                   <Th className="text-right">User</Th>
                   <Th className="text-right">Koleksi</Th>
+                  <Th className="text-right">Limits</Th>
                   <Th className="text-right">Sewa aktif</Th>
                   <Th className="text-right">Omzet (Jul)</Th>
                 </tr>
@@ -100,13 +124,65 @@ export default function Dev() {
               <tbody className="divide-y divide-hairline">
                 {tenants.map((t) => {
                   const ds = datasets[t.id];
+                  const rules = rulesForTenant(t);
                   return (
                     <tr key={t.id}>
                       <Td className="font-medium">{t.name}</Td>
                       <Td className="text-ink-2">{t.subdomain}</Td>
+                      <Td>
+                        <select
+                          value={t.plan}
+                          onChange={(e) => platform.updateTenantPlan(t.id, e.target.value as Plan)}
+                          className="rounded-lg border border-hairline bg-surface px-2 py-1 text-xs font-medium outline-none"
+                          aria-label={`Plan ${t.name}`}
+                        >
+                          {PLANS.map((plan) => (
+                            <option key={plan} value={plan}>{PLAN_LABEL[plan]}</option>
+                          ))}
+                        </select>
+                      </Td>
+                      <Td>
+                        <select
+                          value={t.billingStatus}
+                          onChange={(e) => platform.updateTenantBillingStatus(t.id, e.target.value as BillingStatus)}
+                          className="rounded-lg border border-hairline bg-surface px-2 py-1 text-xs font-medium outline-none"
+                          aria-label={`Billing ${t.name}`}
+                        >
+                          {BILLING_STATUSES.map((status) => (
+                            <option key={status} value={status}>{BILLING_STATUS_LABEL[status]}</option>
+                          ))}
+                        </select>
+                      </Td>
+                      <Td>
+                        <select
+                          value={t.status}
+                          onChange={(e) => platform.updateTenantStatus(t.id, e.target.value as StoreStatus)}
+                          className="rounded-lg border border-hairline bg-surface px-2 py-1 text-xs font-medium outline-none"
+                          aria-label={`Status ${t.name}`}
+                        >
+                          {STORE_STATUSES.map((status) => (
+                            <option key={status} value={status}>{STORE_STATUS_LABEL[status]}</option>
+                          ))}
+                        </select>
+                      </Td>
+                      <Td>
+                        <select
+                          value={t.onboardingStatus}
+                          onChange={(e) => platform.updateTenantOnboardingStatus(t.id, e.target.value as OnboardingStatus)}
+                          className="rounded-lg border border-hairline bg-surface px-2 py-1 text-xs font-medium outline-none"
+                          aria-label={`Onboarding ${t.name}`}
+                        >
+                          {ONBOARDING_STATUSES.map((status) => (
+                            <option key={status} value={status}>{ONBOARDING_STATUS_LABEL[status]}</option>
+                          ))}
+                        </select>
+                      </Td>
                       <Td className="text-ink-2">{t.outlet}</Td>
                       <Td className="text-right">{users.filter((u) => u.tenantId === t.id).length}</Td>
                       <Td className="text-right">{ds.inventory.length}</Td>
+                      <Td className="text-right text-xs text-ink-2">
+                        {ds.inventory.length}/{limitText(rules.inventoryLimit)} items · {users.filter((u) => u.tenantId === t.id).length}/{rules.staffLimit} users
+                      </Td>
                       <Td className="text-right">{ds.bookings.filter((b) => b.status === "active").length}</Td>
                       <Td className="text-right font-medium">{formatIDR(ds.monthlyRevenue.at(-1)?.revenue ?? 0)}</Td>
                     </tr>
@@ -116,6 +192,8 @@ export default function Dev() {
             </table>
           </div>
         </Card>
+
+        <TenantOverrides />
 
         {/* User management */}
         <Card className="mt-6 overflow-hidden">
@@ -195,56 +273,287 @@ export default function Dev() {
   );
 }
 
+function slugify(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/\.rentie\.id$/i, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 32);
+}
+
+function CreateStoreForm() {
+  const { platform } = useTenant();
+  const [storeName, setStoreName] = useState("");
+  const [ownerName, setOwnerName] = useState("");
+  const [outlet, setOutlet] = useState("");
+  const [whatsapp, setWhatsapp] = useState("");
+  const [bookingSlug, setBookingSlug] = useState("");
+  const [plan, setPlan] = useState<Plan>("free");
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+  const effectiveSlug = slugify(bookingSlug || storeName);
+
+  const submit = (event: FormEvent) => {
+    event.preventDefault();
+    setMessage("");
+    setError("");
+    try {
+      const result = platform.createStore({
+        storeName,
+        ownerName,
+        outlet,
+        whatsapp,
+        bookingSlug: effectiveSlug,
+        plan,
+      });
+      setStoreName("");
+      setOwnerName("");
+      setOutlet("");
+      setWhatsapp("");
+      setBookingSlug("");
+      setPlan("free");
+      setMessage(`${result.tenant.name} created with ${PLAN_LABEL[result.tenant.plan]} plan.`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not create store.");
+    }
+  };
+
+  return (
+    <Card className="mt-6 overflow-hidden">
+      <div className="flex items-center gap-2 border-b border-hairline px-5 py-4">
+        <Plus size={15} className="text-ink-3" />
+        <h2 className="text-sm font-semibold">Create store manually</h2>
+        <span className="text-xs text-ink-3">/dev creates records only; it does not login as tenant user</span>
+      </div>
+      <form onSubmit={submit} className="grid gap-2 border-b border-hairline px-5 py-3 lg:grid-cols-6">
+        <input
+          value={storeName}
+          onChange={(event) => setStoreName(event.target.value)}
+          placeholder="Store name"
+          className="rounded-lg border border-hairline bg-surface px-3 py-2 text-sm outline-none focus:border-brand-400"
+        />
+        <input
+          value={ownerName}
+          onChange={(event) => setOwnerName(event.target.value)}
+          placeholder="Owner name"
+          className="rounded-lg border border-hairline bg-surface px-3 py-2 text-sm outline-none focus:border-brand-400"
+        />
+        <input
+          value={outlet}
+          onChange={(event) => setOutlet(event.target.value)}
+          placeholder="Outlet"
+          className="rounded-lg border border-hairline bg-surface px-3 py-2 text-sm outline-none focus:border-brand-400"
+        />
+        <input
+          value={whatsapp}
+          onChange={(event) => setWhatsapp(event.target.value)}
+          placeholder="WhatsApp"
+          className="rounded-lg border border-hairline bg-surface px-3 py-2 text-sm outline-none focus:border-brand-400"
+        />
+        <div className="flex overflow-hidden rounded-lg border border-hairline bg-surface">
+          <input
+            value={bookingSlug || effectiveSlug}
+            onChange={(event) => setBookingSlug(slugify(event.target.value))}
+            placeholder="booking-url"
+            className="min-w-0 flex-1 bg-transparent px-3 py-2 text-sm outline-none"
+          />
+          <span className="border-l border-hairline px-2 py-2 text-xs text-ink-3">.rentie.id</span>
+        </div>
+        <div className="flex gap-2">
+          <select
+            value={plan}
+            onChange={(event) => setPlan(event.target.value as Plan)}
+            className="min-w-0 flex-1 rounded-lg border border-hairline bg-surface px-2 py-2 text-sm outline-none"
+          >
+            {PLANS.map((planId) => (
+              <option key={planId} value={planId}>{PLAN_LABEL[planId]}</option>
+            ))}
+          </select>
+          <button
+            type="submit"
+            disabled={!storeName.trim() || !ownerName.trim() || !outlet.trim() || !whatsapp.trim() || !effectiveSlug}
+            className="rounded-lg bg-brand-700 px-3 py-2 text-sm font-medium text-white hover:bg-brand-800 disabled:opacity-50"
+          >
+            Create
+          </button>
+        </div>
+      </form>
+      {(message || error) && (
+        <div className={`flex items-center gap-2 px-5 py-3 text-sm ${error ? "text-critical" : "text-good-text"}`}>
+          {error ? <AlertTriangle size={15} /> : <ShieldCheck size={15} />}
+          {error || message}
+        </div>
+      )}
+    </Card>
+  );
+}
+
+function TenantOverrides() {
+  const { platform } = useTenant();
+  const [tenantId, setTenantId] = useState(platform.tenants[0]?.id ?? "");
+  const tenant = platform.tenants.find((row) => row.id === tenantId) ?? platform.tenants[0];
+  const rules = tenant ? rulesForTenant(tenant) : null;
+
+  if (!tenant || !rules) return null;
+
+  const updateNumber = (key: "inventoryLimit" | "staffLimit", value: string) => {
+    platform.updateTenantOverrides(tenant.id, { [key]: value === "" ? undefined : Number(value) });
+  };
+
+  const updateBool = (key: "publicBookingEnabled" | "manualBookingEnabled" | "exportEnabled", value: string) => {
+    platform.updateTenantOverrides(tenant.id, { [key]: value === "default" ? null : value === "true" });
+  };
+
+  return (
+    <Card className="mt-6 p-5">
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+        <h2 className="flex items-center gap-2 text-sm font-semibold">
+          <SlidersHorizontal size={15} className="text-ink-3" /> Store overrides
+        </h2>
+        <select
+          value={tenant.id}
+          onChange={(event) => setTenantId(event.target.value)}
+          className="rounded-lg border border-hairline bg-surface px-2 py-2 text-sm outline-none"
+          aria-label="Override tenant"
+        >
+          {platform.tenants.map((row) => (
+            <option key={row.id} value={row.id}>{row.name}</option>
+          ))}
+        </select>
+      </div>
+
+      <div className="grid gap-3 md:grid-cols-5">
+        <label>
+          <span className="mb-1 block text-xs font-medium text-ink-2">Inventory limit</span>
+          <input
+            type="number"
+            min={0}
+            value={tenant.limitOverrides?.inventoryLimit ?? ""}
+            onChange={(event) => updateNumber("inventoryLimit", event.target.value)}
+            placeholder={limitText(PLAN_LABEL[tenant.plan] ? rulesForTenant({ ...tenant, limitOverrides: {} }).inventoryLimit : rules.inventoryLimit)}
+            className="w-full rounded-lg border border-hairline bg-surface px-2 py-2 text-sm outline-none"
+          />
+        </label>
+        <label>
+          <span className="mb-1 block text-xs font-medium text-ink-2">Staff limit</span>
+          <input
+            type="number"
+            min={1}
+            value={tenant.limitOverrides?.staffLimit ?? ""}
+            onChange={(event) => updateNumber("staffLimit", event.target.value)}
+            placeholder={String(rulesForTenant({ ...tenant, limitOverrides: {} }).staffLimit)}
+            className="w-full rounded-lg border border-hairline bg-surface px-2 py-2 text-sm outline-none"
+          />
+        </label>
+        <label>
+          <span className="mb-1 block text-xs font-medium text-ink-2">Public booking</span>
+          <select
+            value={tenant.limitOverrides?.publicBookingEnabled == null ? "default" : String(tenant.limitOverrides.publicBookingEnabled)}
+            onChange={(event) => updateBool("publicBookingEnabled", event.target.value)}
+            className="w-full rounded-lg border border-hairline bg-surface px-2 py-2 text-sm outline-none"
+          >
+            <option value="default">Default</option>
+            <option value="true">Force enabled</option>
+            <option value="false">Force disabled</option>
+          </select>
+        </label>
+        <label>
+          <span className="mb-1 block text-xs font-medium text-ink-2">Manual booking</span>
+          <select
+            value={tenant.limitOverrides?.manualBookingEnabled == null ? "default" : String(tenant.limitOverrides.manualBookingEnabled)}
+            onChange={(event) => updateBool("manualBookingEnabled", event.target.value)}
+            className="w-full rounded-lg border border-hairline bg-surface px-2 py-2 text-sm outline-none"
+          >
+            <option value="default">Default</option>
+            <option value="true">Force enabled</option>
+            <option value="false">Force disabled</option>
+          </select>
+        </label>
+        <label>
+          <span className="mb-1 block text-xs font-medium text-ink-2">Export</span>
+          <select
+            value={tenant.limitOverrides?.exportEnabled == null ? "default" : String(tenant.limitOverrides.exportEnabled)}
+            onChange={(event) => updateBool("exportEnabled", event.target.value)}
+            className="w-full rounded-lg border border-hairline bg-surface px-2 py-2 text-sm outline-none"
+          >
+            <option value="default">Default</option>
+            <option value="true">Force enabled</option>
+            <option value="false">Force disabled</option>
+          </select>
+        </label>
+      </div>
+
+      <div className="mt-3 text-xs text-ink-3">
+        Effective: {limitText(rules.inventoryLimit)} inventory · {rules.staffLimit} users · public booking {rules.publicBookingEnabled ? "on" : "off"} · manual booking {rules.manualBookingEnabled ? "on" : "off"} · export {rules.exportEnabled ? "on" : "off"}
+      </div>
+    </Card>
+  );
+}
+
 function AddUserForm() {
   const { platform } = useTenant();
   const [name, setName] = useState("");
   const [tenantId, setTenantId] = useState(platform.tenants[0].id);
   const [role, setRole] = useState<Role>("cashier");
+  const [error, setError] = useState("");
 
   const submit = (e: FormEvent) => {
     e.preventDefault();
+    setError("");
     if (!name.trim()) return;
-    platform.addUser({ tenantId, name, role });
-    setName("");
+    try {
+      platform.addUser({ tenantId, name, role });
+      setName("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not add user.");
+    }
   };
 
   return (
-    <form onSubmit={submit} className="flex flex-wrap items-center gap-2 border-b border-hairline px-5 py-3">
-      <input
-        value={name}
-        onChange={(e) => setName(e.target.value)}
-        placeholder="Nama staf baru"
-        className="min-w-48 flex-1 rounded-lg border border-hairline bg-surface px-3 py-2 text-sm outline-none focus:border-brand-400"
-        aria-label="Nama staf baru"
-      />
-      <select
-        value={tenantId}
-        onChange={(e) => setTenantId(e.target.value)}
-        className="rounded-lg border border-hairline bg-surface px-2 py-2 text-sm outline-none"
-        aria-label="Butik"
-      >
-        {platform.tenants.map((t) => (
-          <option key={t.id} value={t.id}>{t.name}</option>
-        ))}
-      </select>
-      <select
-        value={role}
-        onChange={(e) => setRole(e.target.value as Role)}
-        className="rounded-lg border border-hairline bg-surface px-2 py-2 text-sm outline-none"
-        aria-label="Peran"
-      >
-        {ROLES.map((r) => (
-          <option key={r} value={r}>{ROLE_LABEL[r]}</option>
-        ))}
-      </select>
-      <button
-        type="submit"
-        disabled={!name.trim()}
-        className="flex items-center gap-1.5 rounded-lg bg-brand-700 px-3.5 py-2 text-sm font-medium text-white hover:bg-brand-800 disabled:opacity-50"
-      >
-        <Plus size={15} /> Tambah
-      </button>
-    </form>
+    <>
+      <form onSubmit={submit} className="flex flex-wrap items-center gap-2 border-b border-hairline px-5 py-3">
+        <input
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder="Nama staf baru"
+          className="min-w-48 flex-1 rounded-lg border border-hairline bg-surface px-3 py-2 text-sm outline-none focus:border-brand-400"
+          aria-label="Nama staf baru"
+        />
+        <select
+          value={tenantId}
+          onChange={(e) => setTenantId(e.target.value)}
+          className="rounded-lg border border-hairline bg-surface px-2 py-2 text-sm outline-none"
+          aria-label="Butik"
+        >
+          {platform.tenants.map((t) => (
+            <option key={t.id} value={t.id}>{t.name}</option>
+          ))}
+        </select>
+        <select
+          value={role}
+          onChange={(e) => setRole(e.target.value as Role)}
+          className="rounded-lg border border-hairline bg-surface px-2 py-2 text-sm outline-none"
+          aria-label="Peran"
+        >
+          {ROLES.map((r) => (
+            <option key={r} value={r}>{ROLE_LABEL[r]}</option>
+          ))}
+        </select>
+        <button
+          type="submit"
+          disabled={!name.trim()}
+          className="flex items-center gap-1.5 rounded-lg bg-brand-700 px-3.5 py-2 text-sm font-medium text-white hover:bg-brand-800 disabled:opacity-50"
+        >
+          <Plus size={15} /> Tambah
+        </button>
+      </form>
+      {error && (
+        <div className="flex items-center gap-2 border-b border-hairline px-5 py-2 text-sm text-critical">
+          <AlertTriangle size={15} /> {error}
+        </div>
+      )}
+    </>
   );
 }
 

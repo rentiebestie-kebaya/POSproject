@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import {
+  AlertTriangle,
   QrCode, Search, Plus, X, Ruler, Tag, Wallet, Sparkles,
   LayoutGrid, List as ListIcon, Camera, ImagePlus, Trash2, Check,
 } from "lucide-react";
@@ -573,13 +574,15 @@ function ItemTable({ rows, onOpen }: { rows: KebayaItem[]; onOpen: (id: string) 
 /* ---------- page ---------- */
 
 export default function Inventory() {
-  const { inventory: items, addItem } = useTenant();
+  const { tenant, inventory: items, planRules, addItem } = useTenant();
   const [view, setView] = useState<"grid" | "list">("grid");
   const [status, setStatus] = useState<(typeof STATUS_FILTERS)[number]>("all");
   const [dateSort, setDateSort] = useState<"newest" | "oldest">("newest");
   const [query, setQuery] = useState("");
   const [openId, setOpenId] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
+  const [error, setError] = useState("");
+  const inventoryLocked = planRules.inventoryLimit !== null && items.length >= planRules.inventoryLimit;
 
   const rows = useMemo(() => {
     return items.filter((i) => {
@@ -613,12 +616,32 @@ export default function Inventory() {
             <button className="flex items-center gap-1.5 rounded-full border border-black/10 bg-white px-3.5 py-2 text-sm font-medium hover:bg-brand-50">
               <QrCode size={15} /> Print QR tags
             </button>
-            <button onClick={() => setAdding(true)} className="flex items-center gap-1.5 rounded-full bg-brand-900 px-3.5 py-2 text-sm font-medium text-white hover:bg-brand-800">
+            <button
+              onClick={() => {
+                setError("");
+                if (inventoryLocked) {
+                  setError(`Inventory limit reached. ${tenant.name} can store ${planRules.inventoryLimit} items on ${tenant.plan}.`);
+                  return;
+                }
+                setAdding(true);
+              }}
+              className={`flex items-center gap-1.5 rounded-full px-3.5 py-2 text-sm font-medium text-white ${
+                inventoryLocked ? "bg-brand-300" : "bg-brand-900 hover:bg-brand-800"
+              }`}
+              title={inventoryLocked ? "Upgrade plan or set a /dev override to add more inventory." : undefined}
+            >
               <Plus size={15} /> Add kebaya
             </button>
           </>
         }
       />
+
+      {error && (
+        <div className="mb-4 flex items-start gap-2 rounded-xl border border-critical/20 bg-critical/5 px-3 py-2.5 text-sm text-critical">
+          <AlertTriangle size={16} className="mt-0.5 shrink-0" />
+          <span>{error}</span>
+        </div>
+      )}
 
       <div className="mb-4 flex flex-wrap items-center gap-2">
         <div className="relative">
@@ -678,9 +701,14 @@ export default function Inventory() {
           nextIndex={items.length + 1}
           onClose={() => setAdding(false)}
           onAdd={(item) => {
-            addItem(item);
-            setAdding(false);
-            setOpenId(item.id);
+            try {
+              addItem(item);
+              setAdding(false);
+              setOpenId(item.id);
+            } catch (err) {
+              setError(err instanceof Error ? err.message : "Could not add inventory.");
+              setAdding(false);
+            }
           }}
         />
       )}

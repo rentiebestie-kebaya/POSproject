@@ -1,6 +1,6 @@
 "use client";
 
-import { Download } from "lucide-react";
+import { AlertTriangle, Download } from "lucide-react";
 import { Card, PageHeader, Th, Td } from "../components/Ui";
 import { useTenant } from "../data/store";
 import { formatDate, formatIDR, type Transaction } from "../data/mock";
@@ -26,7 +26,7 @@ function exportCsv(transactions: Transaction[], tenantSlug: string) {
 }
 
 export default function Finance() {
-  const { tenant, bookings, transactions, customerById } = useTenant();
+  const { tenant, bookings, transactions, planRules, customerById } = useTenant();
   const collected = transactions
     .filter((t) => t.paymentStatus === "paid")
     .reduce((a, t) => a + t.total, 0);
@@ -42,11 +42,22 @@ export default function Finance() {
     <>
       <PageHeader
         title="Finance"
-        subtitle="Payments, deposits, and fees for this outlet — export anytime for your accountant."
+        subtitle={
+          planRules.finance === "full"
+            ? "Payments, deposits, and fees for this outlet — export anytime for your accountant."
+            : "Basic revenue summary for this outlet."
+        }
         actions={
           <button
-            onClick={() => exportCsv(transactions, tenant.id)}
-            className="flex items-center gap-1.5 rounded-full border border-black/10 bg-white px-3.5 py-2 text-sm font-medium hover:bg-brand-50"
+            onClick={() => {
+              if (planRules.exportEnabled) exportCsv(transactions, tenant.id);
+            }}
+            className={`flex items-center gap-1.5 rounded-full border px-3.5 py-2 text-sm font-medium ${
+              planRules.exportEnabled
+                ? "border-black/10 bg-white hover:bg-brand-50"
+                : "border-warning/30 bg-warning/10 text-gold-600"
+            }`}
+            title={planRules.exportEnabled ? "Export transactions" : "Data export is available on Pro."}
           >
             <Download size={15} /> Export CSV
           </button>
@@ -69,6 +80,23 @@ export default function Finance() {
         ))}
       </div>
 
+      {planRules.finance !== "full" && (
+        <Card className="mt-4 p-5">
+          <div className="flex items-start gap-3">
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-warning/20 text-gold-600">
+              <AlertTriangle size={17} />
+            </div>
+            <div>
+              <h2 className="text-sm font-semibold">Full finance is available on Pro</h2>
+              <p className="mt-1 text-sm leading-6 text-ink-2">
+                Free and Starter include the summary above. Upgrade to Pro for transaction-level finance, full reports, and data export.
+              </p>
+            </div>
+          </div>
+        </Card>
+      )}
+
+      {planRules.finance === "full" && (
       <Card className="mt-4 overflow-hidden">
         <table className="w-full">
           <thead className="border-b border-hairline bg-page">
@@ -112,6 +140,7 @@ export default function Finance() {
           </tbody>
         </table>
       </Card>
+      )}
     </>
   );
 }

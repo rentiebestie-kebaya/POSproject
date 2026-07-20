@@ -135,10 +135,10 @@ export default function Landing() {
             <a href="#harga" className="transition hover:text-ink">Harga</a>
           </nav>
           <Link
-            href={isAuthenticated ? "/app" : "/login"}
+            href={isAuthenticated ? "/app" : "/signup"}
             className="rounded-full border border-ink/15 px-5 py-2 text-sm font-medium transition hover:border-ink/40"
           >
-            {isAuthenticated ? "Buka Dashboard" : "Coba Demo"}
+            {isAuthenticated ? "Buka Dashboard" : "Buat Store"}
           </Link>
         </div>
       </header>
@@ -168,11 +168,19 @@ export default function Landing() {
           </p>
           <div className="mt-10 flex flex-wrap items-center justify-center gap-4">
             <Link
-              href="/login"
+              href={isAuthenticated ? "/app" : "/signup"}
               className="inline-flex items-center gap-2 rounded-full bg-ink px-7 py-3.5 text-sm font-semibold text-white transition hover:scale-[1.03] hover:bg-brand-900"
             >
-              Coba Demo Gratis
+              {isAuthenticated ? "Buka Dashboard" : "Buat Store Gratis"}
             </Link>
+            {!isAuthenticated && (
+              <Link
+                href="/login"
+                className="inline-flex items-center gap-1.5 rounded-full px-5 py-3.5 text-sm font-medium text-ink-2 transition hover:text-ink"
+              >
+                Coba demo <ArrowRight size={15} />
+              </Link>
+            )}
             <a
               href="#fitur"
               className="inline-flex items-center gap-1.5 rounded-full px-5 py-3.5 text-sm font-medium text-ink-2 transition hover:text-ink"

@@ -9,6 +9,20 @@ export const TODAY = "2026-07-19";
 /* ---------- shared types ---------- */
 
 export type Role = "owner" | "cashier" | "fitting";
+export type Plan = "free" | "starter" | "pro";
+export type BillingStatus = "active" | "pending" | "past_due" | "cancelled";
+export type StoreStatus = "active" | "suspended";
+export type OnboardingStatus = "incomplete" | "complete";
+export type FinanceAccess = "basic" | "full";
+export type CustomerAccess = "basic" | "history" | "analytics";
+
+export interface LimitOverrides {
+  inventoryLimit?: number | null;
+  staffLimit?: number | null;
+  publicBookingEnabled?: boolean | null;
+  manualBookingEnabled?: boolean | null;
+  exportEnabled?: boolean | null;
+}
 
 export interface Tenant {
   id: string;
@@ -18,6 +32,12 @@ export interface Tenant {
   whatsapp: string;
   bookingDepositAmount: number;
   bookingDepositPolicy: BookingDepositPolicy;
+  plan: Plan;
+  billingStatus: BillingStatus;
+  status: StoreStatus;
+  onboardingStatus: OnboardingStatus;
+  logoUrl?: string;
+  limitOverrides?: LimitOverrides;
 }
 
 export interface User {
@@ -31,6 +51,29 @@ export const ROLE_LABEL: Record<Role, string> = {
   owner: "Owner",
   cashier: "Cashier",
   fitting: "Fitting staff",
+};
+
+export const PLAN_LABEL: Record<Plan, string> = {
+  free: "Free",
+  starter: "Starter",
+  pro: "Pro",
+};
+
+export const BILLING_STATUS_LABEL: Record<BillingStatus, string> = {
+  active: "Active",
+  pending: "Pending billing",
+  past_due: "Past due",
+  cancelled: "Cancelled",
+};
+
+export const STORE_STATUS_LABEL: Record<StoreStatus, string> = {
+  active: "Active",
+  suspended: "Suspended",
+};
+
+export const ONBOARDING_STATUS_LABEL: Record<OnboardingStatus, string> = {
+  incomplete: "Incomplete",
+  complete: "Complete",
 };
 
 /* Physical status — fetched from POS transactions in a real system.
@@ -247,6 +290,10 @@ export const tenants: Tenant[] = [
     whatsapp: "+62 812-0000-1234",
     bookingDepositAmount: 150000,
     bookingDepositPolicy: "non_refundable",
+    plan: "pro",
+    billingStatus: "active",
+    status: "active",
+    onboardingStatus: "complete",
   },
   {
     id: "ayu",
@@ -256,6 +303,10 @@ export const tenants: Tenant[] = [
     whatsapp: "+62 813-0000-8899",
     bookingDepositAmount: 100000,
     bookingDepositPolicy: "refundable",
+    plan: "pro",
+    billingStatus: "active",
+    status: "active",
+    onboardingStatus: "complete",
   },
 ];
 

@@ -13,12 +13,14 @@ import {
   Settings,
   Bell,
   ChevronDown,
+  BadgeCheck,
   LogOut,
   PanelLeftClose,
   PanelLeftOpen,
 } from "lucide-react";
 import { useTenant } from "../data/store";
-import { ROLE_LABEL } from "../data/mock";
+import { BILLING_STATUS_LABEL, PLAN_LABEL, ROLE_LABEL } from "../data/mock";
+import { limitText } from "../data/plans";
 
 const NAV = [
   { to: "/app", label: "Dashboard", icon: LayoutDashboard, end: true },
@@ -31,7 +33,7 @@ const NAV = [
 ];
 
 export default function Layout({ children }: { children: ReactNode }) {
-  const { tenant, user, logout } = useTenant();
+  const { tenant, user, team, inventory, planRules, logout } = useTenant();
   const pathname = usePathname();
   const [sidebarCollapsed, setSidebarCollapsed] = useState(
     () => window.localStorage.getItem("rentie-sidebar-collapsed") === "true",
@@ -103,6 +105,33 @@ export default function Layout({ children }: { children: ReactNode }) {
             );
           })}
         </nav>
+
+        <Link
+          href="/app/settings"
+          title={sidebarCollapsed ? `${PLAN_LABEL[tenant.plan]} plan` : undefined}
+          className={`mx-3 mb-3 flex items-center border border-black/5 bg-white text-left shadow-[0_1px_2px_rgba(11,11,11,0.03)] transition-colors hover:bg-brand-50 ${
+            sidebarCollapsed ? "justify-center rounded-full p-2.5" : "gap-3 rounded-2xl p-3"
+          }`}
+        >
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-brand-900 text-gold-400">
+            <BadgeCheck size={17} />
+          </div>
+          {!sidebarCollapsed && (
+            <div className="min-w-0">
+              <div className="flex items-center gap-1.5">
+                <span className="truncate text-sm font-semibold">{PLAN_LABEL[tenant.plan]}</span>
+                <span className="rounded-full bg-warning/20 px-1.5 py-0.5 text-[10px] font-medium text-gold-600">
+                  {BILLING_STATUS_LABEL[tenant.billingStatus]}
+                </span>
+              </div>
+              <div className="mt-1 text-[11px] leading-4 text-ink-2">
+                {inventory.length}/{limitText(planRules.inventoryLimit)} inventory
+                <span className="mx-1 text-hairline">|</span>
+                {team.length}/{planRules.staffLimit} users
+              </div>
+            </div>
+          )}
+        </Link>
 
         <div className={`border-t border-black/5 py-4 ${sidebarCollapsed ? "px-3" : "px-5"}`}>
           <button

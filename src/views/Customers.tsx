@@ -1,17 +1,19 @@
 "use client";
 
 import { useState } from "react";
-import { CalendarHeart, MessageCircle, Ruler, Plus } from "lucide-react";
+import { AlertTriangle, CalendarHeart, MessageCircle, Ruler, Plus } from "lucide-react";
 import { Card, PageHeader, BookingStatusBadge } from "../components/Ui";
 import { useTenant } from "../data/store";
-import { formatDate, formatIDR, type Customer } from "../data/mock";
+import { formatDate, formatIDR, type Customer, type CustomerAccess } from "../data/mock";
 
-function CustomerDetail({ customer }: { customer: Customer }) {
+function CustomerDetail({ access, customer }: { access: CustomerAccess; customer: Customer }) {
   const { bookings, itemById } = useTenant();
   const history = bookings
     .filter((b) => b.customerId === customer.id)
     .sort((a, b) => b.startDate.localeCompare(a.startDate));
   const latest = customer.measurements[0];
+  const canViewHistory = access === "history" || access === "analytics";
+  const canViewMeasurements = access === "analytics";
 
   return (
     <div className="space-y-4">
@@ -36,37 +38,54 @@ function CustomerDetail({ customer }: { customer: Customer }) {
         )}
       </Card>
 
-      <Card className="p-5">
-        <div className="mb-3 flex items-center justify-between">
-          <h3 className="flex items-center gap-2 text-sm font-semibold">
-            <Ruler size={15} className="text-ink-3" /> Measurements
-          </h3>
-          <button className="flex items-center gap-1 text-xs font-medium text-brand-600 hover:underline">
-            <Plus size={13} /> New fitting
-          </button>
-        </div>
-        <div className="grid grid-cols-3 gap-3">
-          {[
-            ["Bust", latest.bust],
-            ["Waist", latest.waist],
-            ["Hip", latest.hip],
-          ].map(([label, v]) => (
-            <div key={label} className="rounded-lg bg-page px-3 py-2.5 text-center">
-              <div className="text-lg font-semibold tabular-nums">{v} cm</div>
-              <div className="text-xs text-ink-3">{label}</div>
-            </div>
-          ))}
-        </div>
-        <div className="mt-2 text-xs text-ink-3">
-          Recorded {formatDate(latest.recordedAt)}
-          {customer.measurements.length > 1 &&
-            ` · ${customer.measurements.length - 1} earlier record${customer.measurements.length > 2 ? "s" : ""} kept`}
-        </div>
-      </Card>
+      {canViewMeasurements ? (
+        <Card className="p-5">
+          <div className="mb-3 flex items-center justify-between">
+            <h3 className="flex items-center gap-2 text-sm font-semibold">
+              <Ruler size={15} className="text-ink-3" /> Measurements
+            </h3>
+            <button className="flex items-center gap-1 text-xs font-medium text-brand-600 hover:underline">
+              <Plus size={13} /> New fitting
+            </button>
+          </div>
+          {latest ? (
+            <>
+              <div className="grid grid-cols-3 gap-3">
+                {[
+                  ["Bust", latest.bust],
+                  ["Waist", latest.waist],
+                  ["Hip", latest.hip],
+                ].map(([label, v]) => (
+                  <div key={label} className="rounded-lg bg-page px-3 py-2.5 text-center">
+                    <div className="text-lg font-semibold tabular-nums">{v} cm</div>
+                    <div className="text-xs text-ink-3">{label}</div>
+                  </div>
+                ))}
+              </div>
+              <div className="mt-2 text-xs text-ink-3">
+                Recorded {formatDate(latest.recordedAt)}
+                {customer.measurements.length > 1 &&
+                  ` · ${customer.measurements.length - 1} earlier record${customer.measurements.length > 2 ? "s" : ""} kept`}
+              </div>
+            </>
+          ) : (
+            <p className="text-sm text-ink-2">No measurements recorded yet.</p>
+          )}
+        </Card>
+      ) : (
+        <Card className="p-5">
+          <div className="flex items-start gap-2 text-sm text-ink-2">
+            <AlertTriangle size={16} className="mt-0.5 shrink-0 text-gold-600" />
+            <span>Measurements and customer analytics are available on Pro.</span>
+          </div>
+        </Card>
+      )}
 
       <Card className="p-5">
         <h3 className="mb-3 text-sm font-semibold">Rental history</h3>
-        {history.length === 0 ? (
+        {!canViewHistory ? (
+          <p className="text-sm text-ink-2">Customer history is available on Starter and Pro.</p>
+        ) : history.length === 0 ? (
           <p className="text-sm text-ink-2">No rentals yet.</p>
         ) : (
           <ul className="divide-y divide-hairline">
@@ -92,8 +111,8 @@ function CustomerDetail({ customer }: { customer: Customer }) {
 }
 
 export default function Customers() {
-  const { customers } = useTenant();
-  const [selectedId, setSelectedId] = useState(customers[0].id);
+  const { customers, planRules } = useTenant();
+  const [selectedId, setSelectedId] = useState(customers[0]?.id ?? "");
   const selected = customers.find((c) => c.id === selectedId) ?? customers[0];
 
   return (
@@ -110,8 +129,11 @@ export default function Customers() {
 
       <div className="grid gap-4 lg:grid-cols-3">
         <Card className="self-start overflow-hidden">
-          <ul className="divide-y divide-hairline">
-            {customers.map((c) => (
+          {customers.length === 0 ? (
+            <p className="p-5 text-sm text-ink-2">No customers yet. Customers are created from POS rentals and bookings.</p>
+          ) : (
+            <ul className="divide-y divide-hairline">
+              {customers.map((c) => (
               <li key={c.id}>
                 <button
                   onClick={() => setSelectedId(c.id)}
@@ -128,12 +150,17 @@ export default function Customers() {
                   </div>
                 </button>
               </li>
-            ))}
-          </ul>
+              ))}
+            </ul>
+          )}
         </Card>
 
         <div className="lg:col-span-2">
-          <CustomerDetail customer={selected} />
+          {selected ? (
+            <CustomerDetail access={planRules.customers} customer={selected} />
+          ) : (
+            <Card className="p-8 text-center text-sm text-ink-2">Select a customer to view details.</Card>
+          )}
         </div>
       </div>
     </>

@@ -30,6 +30,7 @@ import {
   type Transaction,
   type TransactionType,
 } from "../data/mock";
+import { rulesForTenant } from "../data/plans";
 
 const METHODS: PaymentMethod[] = ["QRIS", "GoPay", "OVO", "DANA", "Cash", "Card"];
 const BASE_RENT_DAYS = 3;
@@ -251,6 +252,12 @@ function PaymentConfirmationPanel({
 
 function receiptHtml(receipt: TransactionReceipt): string {
   const isClose = receipt.transaction.transactionType === "close";
+  const planRules = rulesForTenant(receipt.tenant);
+  const brandLine = planRules.customReceiptBranding
+    ? receipt.tenant.logoUrl
+      ? `<img class="logo" src="${escapeHtml(receipt.tenant.logoUrl)}" alt="${escapeHtml(receipt.tenant.name)} logo" />`
+      : `<p class="brand-note">${escapeHtml(receipt.tenant.name)} receipt</p>`
+    : `<p class="brand-note">Powered by RENTIE</p>`;
   const rows = receipt.items
     .map((item) => `<tr><td>${escapeHtml(item.name)}<br><small>${escapeHtml(item.qrCode)}</small></td><td>${formatIDR(item.rentalPrice)}</td></tr>`)
     .join("");
@@ -269,6 +276,8 @@ function receiptHtml(receipt: TransactionReceipt): string {
       td { border-bottom: 1px solid #e5e5e5; padding: 7px 0; vertical-align: top; }
       td:last-child { text-align: right; white-space: nowrap; }
       .total { font-size: 15px; font-weight: 700; }
+      .brand-note { margin-top: 18px; border-top: 1px solid #ddd; padding-top: 12px; color: #555; }
+      .logo { display: block; max-height: 44px; max-width: 160px; margin-top: 18px; border-top: 1px solid #ddd; padding-top: 12px; }
       small { color: #555; }
       @media print { button { display: none; } body { margin: 0; } }
     </style>
@@ -302,6 +311,7 @@ function receiptHtml(receipt: TransactionReceipt): string {
     ${receipt.transaction.notes ? `<h2>Special Notes</h2><p>${escapeHtml(receipt.transaction.notes)}</p>` : ""}
     ${receipt.transaction.returnNotes ? `<h2>Return Notes</h2><p>${escapeHtml(receipt.transaction.returnNotes)}</p>` : ""}
     ${evidence?.idPhotoName || evidence?.clientPhotoName ? `<h2>Evidence</h2><p>ID: ${escapeHtml(evidence.idPhotoName || "-")}</p><p>Client: ${escapeHtml(evidence.clientPhotoName || "-")}</p>` : ""}
+    ${brandLine}
   </body>
 </html>`;
 }

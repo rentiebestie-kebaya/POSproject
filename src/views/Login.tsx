@@ -82,6 +82,12 @@ export default function Login() {
           <p className="mt-1 text-sm text-ink-2">
             Pilih akun staf untuk masuk. Prototipe — tidak perlu kata sandi.
           </p>
+          <p className="mt-3 text-sm text-ink-2">
+            Belum punya store?{" "}
+            <Link href="/signup" className="font-semibold text-brand-700 hover:text-brand-900">
+              Buat store baru
+            </Link>
+          </p>
 
           <div className="mt-6 space-y-6">
             {platform.tenants.map((t) => {

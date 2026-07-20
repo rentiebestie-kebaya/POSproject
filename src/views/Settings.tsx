@@ -3,10 +3,11 @@
 import { Store, Users } from "lucide-react";
 import { Card, PageHeader } from "../components/Ui";
 import { useTenant } from "../data/store";
-import { ROLE_LABEL } from "../data/mock";
+import { BILLING_STATUS_LABEL, ONBOARDING_STATUS_LABEL, PLAN_LABEL, ROLE_LABEL, STORE_STATUS_LABEL } from "../data/mock";
+import { limitText } from "../data/plans";
 
 export default function Settings() {
-  const { tenant, team } = useTenant();
+  const { tenant, team, planRules } = useTenant();
 
   return (
     <>
@@ -23,6 +24,12 @@ export default function Settings() {
               ["Booking page", tenant.subdomain],
               ["Outlet", tenant.outlet],
               ["WhatsApp Business", tenant.whatsapp],
+              ["Plan", PLAN_LABEL[tenant.plan]],
+              ["Billing", BILLING_STATUS_LABEL[tenant.billingStatus]],
+              ["Store status", STORE_STATUS_LABEL[tenant.status]],
+              ["Onboarding", ONBOARDING_STATUS_LABEL[tenant.onboardingStatus]],
+              ["Inventory limit", limitText(planRules.inventoryLimit)],
+              ["Staff limit", `${planRules.staffLimit} total users`],
             ].map(([k, v]) => (
               <div key={k} className="flex justify-between gap-4 border-b border-hairline pb-3 last:border-0 last:pb-0">
                 <dt className="text-ink-2">{k}</dt>

@@ -11,18 +11,24 @@ import {
   conflictsIn,
   futureBookingIn,
   seedData,
-  tenants,
-  users,
+  tenants as seedTenants,
+  users as seedUsers,
   type Booking,
   type BookingRequest,
+  type BillingStatus,
   type Customer,
   type KebayaItem,
+  type LimitOverrides,
+  type OnboardingStatus,
   type PaymentMethod,
+  type Plan,
+  type StoreStatus,
   type Tenant,
   type TenantDataset,
   type Transaction,
   type User,
 } from "./mock";
+import { rulesForTenant } from "./plans";
 
 export interface OpenTransactionInput {
   itemIds: string[];
@@ -118,6 +124,20 @@ export interface AddUserInput {
   role: User["role"];
 }
 
+export interface CreateStoreInput {
+  storeName: string;
+  ownerName: string;
+  outlet: string;
+  whatsapp: string;
+  bookingSlug: string;
+  plan: Plan;
+}
+
+export interface CreateStoreResult {
+  tenant: Tenant;
+  user: User;
+}
+
 /** Platform-level view for the developer console — spans ALL tenants, unlike the
     rest of the context, which is scoped to the signed-in user's shop. */
 export interface PlatformValue {
@@ -125,8 +145,14 @@ export interface PlatformValue {
   users: User[];
   datasets: Record<string, TenantDataset>;
   addUser: (input: AddUserInput) => void;
+  createStore: (input: CreateStoreInput) => CreateStoreResult;
   removeUser: (id: string) => void;
   setUserRole: (id: string, role: User["role"]) => void;
+  updateTenantPlan: (tenantId: string, plan: Plan) => void;
+  updateTenantBillingStatus: (tenantId: string, billingStatus: BillingStatus) => void;
+  updateTenantStatus: (tenantId: string, status: StoreStatus) => void;
+  updateTenantOnboardingStatus: (tenantId: string, onboardingStatus: OnboardingStatus) => void;
+  updateTenantOverrides: (tenantId: string, overrides: LimitOverrides) => void;
   /** Prototype dev session — separate from the tenant staff session. */
   devAuthed: boolean;
   devLogin: () => void;
@@ -146,6 +172,8 @@ interface TenantContextValue {
   sessionReady: boolean;
   /** Signs in as a specific staff member; the tenant is derived from that user. */
   login: (userId: string) => void;
+  /** Prototype signup: creates one shop workspace and signs in its owner. */
+  createStore: (input: CreateStoreInput) => CreateStoreResult;
   logout: () => void;
 
   /** Cross-tenant data + user management for the developer console. */
@@ -157,6 +185,7 @@ interface TenantContextValue {
   bookings: Booking[];
   transactions: TenantDataset["transactions"];
   monthlyRevenue: TenantDataset["monthlyRevenue"];
+  planRules: ReturnType<typeof rulesForTenant>;
 
   /** Adds to the current tenant's inventory — tenantId is stamped by the store. */
   addItem: (item: Omit<KebayaItem, "tenantId" | "dateAdded">) => void;
@@ -189,16 +218,71 @@ function uniqueId(prefix: string): string {
   return `${prefix}${Date.now().toString(36).toUpperCase()}${Math.random().toString(36).slice(2, 5).toUpperCase()}`;
 }
 
+function emptyDataset(): TenantDataset {
+  return {
+    inventory: [],
+    customers: [],
+    bookingRequests: [],
+    bookings: [],
+    transactions: [],
+    monthlyRevenue: [
+      { month: "Feb", revenue: 0 },
+      { month: "Mar", revenue: 0 },
+      { month: "Apr", revenue: 0 },
+      { month: "May", revenue: 0 },
+      { month: "Jun", revenue: 0 },
+      { month: "Jul", revenue: 0 },
+    ],
+  };
+}
+
+function normalizeSlug(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/\.rentie\.id$/i, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 32);
+}
+
+function normalizeTenant(tenant: Tenant): Tenant {
+  return {
+    ...tenant,
+    plan: tenant.plan ?? "pro",
+    billingStatus: tenant.billingStatus ?? "active",
+    status: tenant.status ?? "active",
+    onboardingStatus: tenant.onboardingStatus ?? "complete",
+    limitOverrides: tenant.limitOverrides ?? {},
+  };
+}
+
+function billingStatusForPlan(plan: Plan): BillingStatus {
+  return plan === "free" ? "active" : "pending";
+}
+
+function ensureDatasets(
+  savedData: Record<string, TenantDataset>,
+  tenantList: Tenant[],
+): Record<string, TenantDataset> {
+  return tenantList.reduce<Record<string, TenantDataset>>((next, tenant) => {
+    next[tenant.id] = savedData[tenant.id] ?? emptyDataset();
+    return next;
+  }, {});
+}
+
 // Persisted so a page reload keeps the "signed-in" user, like a real session.
 const SESSION_KEY = "rentie.userId";
 // Separate dev-console session — the platform admin is not a tenant staff member.
 const DEV_KEY = "rentie.dev";
 const DATA_KEY = "rentie.tenantData.v1";
+const TENANTS_KEY = "rentie.tenants.v1";
+const USERS_KEY = "rentie.users.v1";
 
 export function TenantProvider({ children }: { children: ReactNode }) {
+  const [tenantList, setTenantList] = useState<Tenant[]>(seedTenants.map(normalizeTenant));
   // Session-mutable user directory — the dev console adds/removes entries here,
   // and the login screen reads from it, so newly created users can sign in.
-  const [userList, setUserList] = useState<User[]>(users);
+  const [userList, setUserList] = useState<User[]>(seedUsers);
   // The signed-in user is the session source of truth; null means logged out.
   // Starts null on the server and is restored from localStorage after
   // hydration (Next.js renders this component on the server first, where
@@ -207,18 +291,51 @@ export function TenantProvider({ children }: { children: ReactNode }) {
   const [devAuthed, setDevAuthed] = useState(false);
   const [sessionReady, setSessionReady] = useState(false);
   const [dataReady, setDataReady] = useState(false);
+  // Session-mutable copy of the per-tenant datasets (added items live here).
+  const [data, setData] = useState(seedData);
 
   useEffect(() => {
+    let restoredTenants = seedTenants.map(normalizeTenant);
+    let restoredUsers = seedUsers;
+
+    const savedTenants = localStorage.getItem(TENANTS_KEY);
+    if (savedTenants) {
+      try {
+        restoredTenants = (JSON.parse(savedTenants) as Tenant[]).map(normalizeTenant);
+        setTenantList(restoredTenants);
+      } catch {
+        localStorage.removeItem(TENANTS_KEY);
+      }
+    }
+
+    const savedUsers = localStorage.getItem(USERS_KEY);
+    if (savedUsers) {
+      try {
+        restoredUsers = JSON.parse(savedUsers) as User[];
+        setUserList(restoredUsers);
+      } catch {
+        localStorage.removeItem(USERS_KEY);
+      }
+    }
+
     const saved = localStorage.getItem(SESSION_KEY);
-    if (saved && users.some((u) => u.id === saved)) setUserId(saved);
+    if (saved && restoredUsers.some((u) => u.id === saved)) {
+      setUserId(saved);
+    } else {
+      localStorage.removeItem(SESSION_KEY);
+    }
+
     setDevAuthed(localStorage.getItem(DEV_KEY) === "1");
     const savedData = localStorage.getItem(DATA_KEY);
     if (savedData) {
       try {
-        setData(JSON.parse(savedData) as Record<string, TenantDataset>);
+        setData(ensureDatasets(JSON.parse(savedData) as Record<string, TenantDataset>, restoredTenants));
       } catch {
         localStorage.removeItem(DATA_KEY);
+        setData(ensureDatasets(seedData, restoredTenants));
       }
+    } else {
+      setData(ensureDatasets(seedData, restoredTenants));
     }
     setDataReady(true);
     setSessionReady(true);
@@ -227,9 +344,17 @@ export function TenantProvider({ children }: { children: ReactNode }) {
   // shop automatically. Falls back to the first tenant only while logged out, so
   // the store's selectors stay valid (the app never renders them unauthenticated).
   const currentUser = (userId && userList.find((u) => u.id === userId)) || null;
-  const tenantId = currentUser ? currentUser.tenantId : tenants[0].id;
-  // Session-mutable copy of the per-tenant datasets (added items live here).
-  const [data, setData] = useState(seedData);
+  const tenantId = currentUser ? currentUser.tenantId : tenantList[0]?.id ?? seedTenants[0].id;
+
+  useEffect(() => {
+    if (!sessionReady) return;
+    localStorage.setItem(TENANTS_KEY, JSON.stringify(tenantList));
+  }, [tenantList, sessionReady]);
+
+  useEffect(() => {
+    if (!sessionReady) return;
+    localStorage.setItem(USERS_KEY, JSON.stringify(userList));
+  }, [userList, sessionReady]);
 
   useEffect(() => {
     if (!dataReady) return;
@@ -262,9 +387,81 @@ export function TenantProvider({ children }: { children: ReactNode }) {
 
   const addUser = useCallback((input: AddUserInput) => {
     const name = input.name.trim();
-    if (!name || !tenants.some((t) => t.id === input.tenantId)) return;
+    const tenant = tenantList.find((t) => t.id === input.tenantId);
+    if (!name || !tenant) return;
+    const planRules = rulesForTenant(tenant);
+    const currentTeam = userList.filter((user) => user.tenantId === input.tenantId);
+    if (currentTeam.length >= planRules.staffLimit) {
+      throw new Error(`${tenant.name} can have ${planRules.staffLimit} total user(s) on the current plan.`);
+    }
     setUserList((prev) => [...prev, { id: uniqueId("U"), tenantId: input.tenantId, name, role: input.role }]);
-  }, []);
+  }, [tenantList, userList]);
+
+  const buildStore = useCallback(
+    (input: CreateStoreInput): CreateStoreResult => {
+      const storeName = input.storeName.trim();
+      const ownerName = input.ownerName.trim();
+      const outlet = input.outlet.trim();
+      const whatsapp = input.whatsapp.trim();
+      const slug = normalizeSlug(input.bookingSlug || storeName);
+      const plan = input.plan;
+
+      if (!storeName || !ownerName || !outlet || !whatsapp || !slug) {
+        throw new Error("Complete the required signup fields first.");
+      }
+
+      const slugTaken = tenantList.some((tenant) => {
+        const existingSlug = tenant.subdomain.split(".")[0].toLowerCase();
+        return tenant.id === slug || existingSlug === slug || tenant.subdomain.toLowerCase() === `${slug}.rentie.id`;
+      });
+      if (slugTaken) {
+        throw new Error("That booking URL is already taken. Choose another one.");
+      }
+
+      const tenant: Tenant = {
+        id: slug,
+        name: storeName,
+        subdomain: `${slug}.rentie.id`,
+        outlet,
+        whatsapp,
+        bookingDepositAmount: 100000,
+        bookingDepositPolicy: "non_refundable",
+        plan,
+        billingStatus: billingStatusForPlan(plan),
+        status: "active",
+        onboardingStatus: "incomplete",
+        limitOverrides: {},
+      };
+      const user: User = {
+        id: uniqueId("U"),
+        tenantId: tenant.id,
+        name: ownerName,
+        role: "owner",
+      };
+
+      setTenantList((prev) => [...prev, tenant]);
+      setUserList((prev) => [...prev, user]);
+      setData((prev) => ({ ...prev, [tenant.id]: emptyDataset() }));
+
+      return { tenant, user };
+    },
+    [tenantList],
+  );
+
+  const createStore = useCallback(
+    (input: CreateStoreInput): CreateStoreResult => {
+      const result = buildStore(input);
+      localStorage.setItem(SESSION_KEY, result.user.id);
+      setUserId(result.user.id);
+      return result;
+    },
+    [buildStore],
+  );
+
+  const createPlatformStore = useCallback(
+    (input: CreateStoreInput): CreateStoreResult => buildStore(input),
+    [buildStore],
+  );
 
   const removeUser = useCallback(
     (id: string) => {
@@ -290,8 +487,57 @@ export function TenantProvider({ children }: { children: ReactNode }) {
     [userList],
   );
 
+  const updateTenantPlan = useCallback((targetTenantId: string, plan: Plan) => {
+    setTenantList((prev) =>
+      prev.map((tenant) =>
+        tenant.id === targetTenantId
+          ? { ...tenant, plan, billingStatus: billingStatusForPlan(plan) }
+          : tenant,
+      ),
+    );
+  }, []);
+
+  const updateTenantBillingStatus = useCallback((targetTenantId: string, billingStatus: BillingStatus) => {
+    setTenantList((prev) =>
+      prev.map((tenant) => (tenant.id === targetTenantId ? { ...tenant, billingStatus } : tenant)),
+    );
+  }, []);
+
+  const updateTenantStatus = useCallback((targetTenantId: string, status: StoreStatus) => {
+    setTenantList((prev) =>
+      prev.map((tenant) => (tenant.id === targetTenantId ? { ...tenant, status } : tenant)),
+    );
+  }, []);
+
+  const updateTenantOnboardingStatus = useCallback(
+    (targetTenantId: string, onboardingStatus: OnboardingStatus) => {
+      setTenantList((prev) =>
+        prev.map((tenant) => (tenant.id === targetTenantId ? { ...tenant, onboardingStatus } : tenant)),
+      );
+    },
+    [],
+  );
+
+  const updateTenantOverrides = useCallback((targetTenantId: string, overrides: LimitOverrides) => {
+    setTenantList((prev) =>
+      prev.map((tenant) =>
+        tenant.id === targetTenantId
+          ? { ...tenant, limitOverrides: { ...(tenant.limitOverrides ?? {}), ...overrides } }
+          : tenant,
+      ),
+    );
+  }, []);
+
   const addItem = useCallback(
     (item: Omit<KebayaItem, "tenantId" | "dateAdded">) => {
+      const tenant = tenantList.find((row) => row.id === tenantId)!;
+      const planRules = rulesForTenant(tenant);
+      if (tenant.status === "suspended") {
+        throw new Error("This store is suspended. Reactivate it before adding inventory.");
+      }
+      if (planRules.inventoryLimit !== null && data[tenantId].inventory.length >= planRules.inventoryLimit) {
+        throw new Error(`Inventory limit reached. ${tenant.name} can store ${planRules.inventoryLimit} items on ${tenant.plan}.`);
+      }
       setData((prev) => ({
         ...prev,
         [tenantId]: {
@@ -300,12 +546,12 @@ export function TenantProvider({ children }: { children: ReactNode }) {
         },
       }));
     },
-    [tenantId],
+    [data, tenantId, tenantList],
   );
 
   const openTransaction = useCallback(
     (input: OpenTransactionInput): TransactionReceipt => {
-      const tenant = tenants.find((t) => t.id === tenantId)!;
+      const tenant = tenantList.find((t) => t.id === tenantId)!;
       const user = currentUser ?? ownerOf(userList, tenantId);
       const ds = data[tenantId];
       const items = ds.inventory.filter((item) => input.itemIds.includes(item.id));
@@ -400,11 +646,19 @@ export function TenantProvider({ children }: { children: ReactNode }) {
 
       return receipt;
     },
-    [data, tenantId, currentUser, userList],
+    [data, tenantId, currentUser, userList, tenantList],
   );
 
   const createReservation = useCallback(
     (input: CreateReservationInput): Booking => {
+      const tenant = tenantList.find((row) => row.id === tenantId)!;
+      const planRules = rulesForTenant(tenant);
+      if (!planRules.manualBookingEnabled) {
+        throw new Error("Manual booking is available on Starter and Pro. Upgrade plan to create future reservations.");
+      }
+      if (tenant.status === "suspended") {
+        throw new Error("This store is suspended. Reactivate it before creating reservations.");
+      }
       const ds = data[tenantId];
       if (input.startDate <= TODAY) {
         throw new Error("Use POS Rental for today or past in-store transactions.");
@@ -477,14 +731,21 @@ export function TenantProvider({ children }: { children: ReactNode }) {
 
       return booking;
     },
-    [data, tenantId],
+    [data, tenantId, tenantList],
   );
 
   const createPublicBookingRequest = useCallback(
     (input: CreatePublicBookingRequestInput): BookingRequest => {
-      const tenant = tenants.find((row) => row.id === input.tenantId);
+      const tenant = tenantList.find((row) => row.id === input.tenantId);
       const ds = tenant ? data[tenant.id] : undefined;
       if (!tenant || !ds) {
+        throw new Error("Booking page is not available.");
+      }
+      const planRules = rulesForTenant(tenant);
+      if (!planRules.publicBookingEnabled) {
+        throw new Error("Public booking page is available on Pro. Upgrade plan to receive online booking requests.");
+      }
+      if (tenant.status === "suspended") {
         throw new Error("Booking page is not available.");
       }
       if (!input.startDate || !input.endDate || input.endDate < input.startDate) {
@@ -527,7 +788,7 @@ export function TenantProvider({ children }: { children: ReactNode }) {
 
       return request;
     },
-    [data],
+    [data, tenantList],
   );
 
   const approveBookingRequest = useCallback(
@@ -630,7 +891,7 @@ export function TenantProvider({ children }: { children: ReactNode }) {
 
   const checkoutReservation = useCallback(
     (input: CheckoutReservationInput): TransactionReceipt => {
-      const tenant = tenants.find((t) => t.id === tenantId)!;
+      const tenant = tenantList.find((t) => t.id === tenantId)!;
       const user = currentUser ?? ownerOf(userList, tenantId);
       const ds = data[tenantId];
       const booking = ds.bookings.find((row) => row.id === input.bookingId);
@@ -693,12 +954,12 @@ export function TenantProvider({ children }: { children: ReactNode }) {
 
       return receipt;
     },
-    [data, tenantId, currentUser, userList],
+    [data, tenantId, currentUser, userList, tenantList],
   );
 
   const closeTransaction = useCallback(
     (input: ReturnTransactionInput): TransactionReceipt => {
-      const tenant = tenants.find((t) => t.id === tenantId)!;
+      const tenant = tenantList.find((t) => t.id === tenantId)!;
       const user = currentUser ?? ownerOf(userList, tenantId);
       const ds = data[tenantId];
       const booking = ds.bookings.find((row) => row.id === input.bookingId);
@@ -746,7 +1007,7 @@ export function TenantProvider({ children }: { children: ReactNode }) {
 
       return receipt;
     },
-    [data, tenantId, currentUser, userList],
+    [data, tenantId, currentUser, userList, tenantList],
   );
 
   const completeCleaning = useCallback(
@@ -771,11 +1032,12 @@ export function TenantProvider({ children }: { children: ReactNode }) {
   );
 
   const value = useMemo<TenantContextValue>(() => {
-    const tenant = tenants.find((t) => t.id === tenantId)!;
+    const tenant = tenantList.find((t) => t.id === tenantId)!;
     // Fallback keeps `user` well-typed while logged out; the app gates on
     // isAuthenticated before rendering anything that reads it.
     const user = currentUser ?? ownerOf(userList, tenantId);
     const ds = data[tenantId];
+    const planRules = rulesForTenant(tenant);
     return {
       tenant,
       user,
@@ -783,19 +1045,27 @@ export function TenantProvider({ children }: { children: ReactNode }) {
       isAuthenticated: currentUser !== null,
       sessionReady,
       login,
+      createStore,
       logout,
       platform: {
-        tenants,
+        tenants: tenantList,
         users: userList,
         datasets: data,
         addUser,
+        createStore: createPlatformStore,
         removeUser,
         setUserRole,
+        updateTenantPlan,
+        updateTenantBillingStatus,
+        updateTenantStatus,
+        updateTenantOnboardingStatus,
+        updateTenantOverrides,
         devAuthed,
         devLogin,
         devLogout,
       },
       ...ds,
+      planRules,
       addItem,
       createReservation,
       createPublicBookingRequest,
@@ -812,18 +1082,26 @@ export function TenantProvider({ children }: { children: ReactNode }) {
     };
   }, [
     tenantId,
+    tenantList,
     currentUser,
     userList,
     data,
     devAuthed,
     sessionReady,
     login,
+    createStore,
+    createPlatformStore,
     logout,
     devLogin,
     devLogout,
     addUser,
     removeUser,
     setUserRole,
+    updateTenantPlan,
+    updateTenantBillingStatus,
+    updateTenantStatus,
+    updateTenantOnboardingStatus,
+    updateTenantOverrides,
     addItem,
     createReservation,
     createPublicBookingRequest,
