@@ -154,7 +154,7 @@ export default function Landing() {
 
         <div className="relative mx-auto w-full max-w-4xl px-6 pt-24 pb-16 text-center lg:pt-32">
           <span className="inline-flex items-center gap-1.5 rounded-full border border-brand-200 bg-white/70 px-4 py-1.5 text-xs font-medium text-brand-700 backdrop-blur">
-            <Sparkles size={13} className="text-gold-500" />
+            
             Aplikasi Kasir Khusus Rental Kebaya & Dress
           </span>
           <h1 className="mt-8 text-5xl font-semibold leading-[1.08] tracking-tight text-ink sm:text-6xl lg:text-7xl">
@@ -171,7 +171,7 @@ export default function Landing() {
               href="/login"
               className="inline-flex items-center gap-2 rounded-full bg-ink px-7 py-3.5 text-sm font-semibold text-white transition hover:scale-[1.03] hover:bg-brand-900"
             >
-              Coba Demo Gratis 🌸
+              Coba Demo Gratis
             </Link>
             <a
               href="#fitur"
