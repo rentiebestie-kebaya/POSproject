@@ -1,6 +1,8 @@
 node_modules
 .next
 .next-stale-*
+.open-next
+.wrangler
 out
 *.local
 .env
