@@ -1,0 +1,11 @@
+node_modules
+.next
+.next-stale-*
+out
+*.local
+.env
+.env.*
+!.env.example
+.DS_Store
+next-env.d.ts
+tsconfig.tsbuildinfo

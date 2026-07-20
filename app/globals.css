@@ -1,0 +1,67 @@
+@import "tailwindcss";
+
+@theme {
+  /* Bone + ultramarine editorial palette, anchored on page #F0EEE9 */
+  --color-brand-50: #eef0f6;
+  --color-brand-100: #dee2f0;
+  --color-brand-200: #bfc7e2;
+  --color-brand-300: #97a3cd;
+  --color-brand-400: #6c7cb5;
+  --color-brand-500: #4a5ca3;
+  --color-brand-600: #2b3f8a; /* ultramarine core */
+  --color-brand-700: #24346f;
+  --color-brand-800: #1b2650;
+  --color-brand-900: #131a33; /* midnight navy */
+  --color-gold-400: #c9a567; /* muted brass */
+  --color-gold-500: #b58f4b;
+  --color-gold-600: #94702f;
+  --color-page: #fcfcfc;
+  --color-surface: #ffffff;
+  --color-ink: #1b1813;
+  --color-ink-2: #57524a;
+  --color-ink-3: #8b8579;
+  --color-hairline: #dcd8ce;
+
+  --color-viz-1: #46618c; /* slate blue */
+  --color-viz-2: #3e7a50; /* sage green */
+  --color-viz-3: #b3402e; /* brick */
+  --color-viz-4: #d9a441; /* ochre */
+  --color-viz-5: #b4632f; /* terracotta */
+  --color-viz-6: #7c6a55; /* taupe */
+  --color-good: #3e7a50;
+  --color-good-text: #2c5a3a;
+  --color-warn: #d9a441;
+  --color-serious: #c97b4a;
+  --color-critical: #b3402e;
+
+  --color-info: #46618c;
+  --color-success: #3e7a50;
+  --color-warning: #d9a441;
+  --color-error: #b3402e;
+
+  --font-sans: system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+body {
+  background: var(--color-page);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+@keyframes marquee {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-50%);
+  }
+}
+
+.animate-marquee {
+  animation: marquee 45s linear infinite;
+}
+
+.animate-marquee:hover {
+  animation-play-state: paused;
+}
