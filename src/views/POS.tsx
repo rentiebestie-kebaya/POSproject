@@ -285,7 +285,7 @@ function receiptHtml(receipt: TransactionReceipt): string {
   <body>
     <button onclick="window.print()">Print</button>
     <h1>${escapeHtml(receipt.tenant.name)}</h1>
-    <p>${escapeHtml(receipt.tenant.outlet)}</p>
+    <p>${escapeHtml(receipt.tenant.location)}</p>
     <p>${isClose ? "Close Transaction" : "Open Transaction"} · ${escapeHtml(receipt.transaction.id)}</p>
     <p>Cashier: ${escapeHtml(receipt.cashierName)} · Date: ${formatDate(receipt.transaction.date)}</p>
 

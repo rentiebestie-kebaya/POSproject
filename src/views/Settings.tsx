@@ -22,7 +22,7 @@ export default function Settings() {
             {[
               ["Shop name", tenant.name],
               ["Booking page", tenant.subdomain],
-              ["Outlet", tenant.outlet],
+              ["Store location", tenant.location],
               ["WhatsApp Business", tenant.whatsapp],
               ["Plan", PLAN_LABEL[tenant.plan]],
               ["Billing", BILLING_STATUS_LABEL[tenant.billingStatus]],

@@ -154,7 +154,7 @@ export default function Layout({ children }: { children: ReactNode }) {
           <div className="text-sm text-ink-2">
             <span className="font-medium text-ink">{tenant.name}</span>
             <span className="mx-2 text-hairline">|</span>
-            {tenant.outlet}
+            {tenant.location}
           </div>
           <div className="flex items-center gap-3">
             <button className="relative rounded-full p-2 text-ink-2 hover:bg-black/5" aria-label="Notifications">

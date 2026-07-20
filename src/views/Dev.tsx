@@ -113,7 +113,7 @@ export default function Dev() {
                   <Th>Billing</Th>
                   <Th>Status</Th>
                   <Th>Onboarding</Th>
-                  <Th>Outlet</Th>
+                  <Th>Location</Th>
                   <Th className="text-right">User</Th>
                   <Th className="text-right">Koleksi</Th>
                   <Th className="text-right">Limits</Th>
@@ -177,7 +177,7 @@ export default function Dev() {
                           ))}
                         </select>
                       </Td>
-                      <Td className="text-ink-2">{t.outlet}</Td>
+                      <Td className="text-ink-2">{t.location}</Td>
                       <Td className="text-right">{users.filter((u) => u.tenantId === t.id).length}</Td>
                       <Td className="text-right">{ds.inventory.length}</Td>
                       <Td className="text-right text-xs text-ink-2">
@@ -286,7 +286,7 @@ function CreateStoreForm() {
   const { platform } = useTenant();
   const [storeName, setStoreName] = useState("");
   const [ownerName, setOwnerName] = useState("");
-  const [outlet, setOutlet] = useState("");
+  const [location, setLocation] = useState("");
   const [whatsapp, setWhatsapp] = useState("");
   const [bookingSlug, setBookingSlug] = useState("");
   const [plan, setPlan] = useState<Plan>("free");
@@ -302,14 +302,14 @@ function CreateStoreForm() {
       const result = platform.createStore({
         storeName,
         ownerName,
-        outlet,
+        location,
         whatsapp,
         bookingSlug: effectiveSlug,
         plan,
       });
       setStoreName("");
       setOwnerName("");
-      setOutlet("");
+      setLocation("");
       setWhatsapp("");
       setBookingSlug("");
       setPlan("free");
@@ -340,9 +340,9 @@ function CreateStoreForm() {
           className="rounded-lg border border-hairline bg-surface px-3 py-2 text-sm outline-none focus:border-brand-400"
         />
         <input
-          value={outlet}
-          onChange={(event) => setOutlet(event.target.value)}
-          placeholder="Outlet"
+          value={location}
+          onChange={(event) => setLocation(event.target.value)}
+          placeholder="Store location"
           className="rounded-lg border border-hairline bg-surface px-3 py-2 text-sm outline-none focus:border-brand-400"
         />
         <input
@@ -372,7 +372,7 @@ function CreateStoreForm() {
           </select>
           <button
             type="submit"
-            disabled={!storeName.trim() || !ownerName.trim() || !outlet.trim() || !whatsapp.trim() || !effectiveSlug}
+            disabled={!storeName.trim() || !ownerName.trim() || !location.trim() || !whatsapp.trim() || !effectiveSlug}
             className="rounded-lg bg-brand-700 px-3 py-2 text-sm font-medium text-white hover:bg-brand-800 disabled:opacity-50"
           >
             Create

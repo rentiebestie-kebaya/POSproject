@@ -97,7 +97,7 @@ export default function Login() {
                   <div className="mb-2 flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-ink-3">
                     <Building2 size={13} /> {t.name}
                     <span className="text-hairline">·</span>
-                    <span className="normal-case tracking-normal text-ink-3">{t.outlet}</span>
+                    <span className="normal-case tracking-normal text-ink-3">{t.location}</span>
                   </div>
                   <div className="space-y-2">
                     {team.map((u) => {

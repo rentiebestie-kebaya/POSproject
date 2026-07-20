@@ -74,7 +74,7 @@ const PLANS = [
     name: "Starter",
     price: "Rp 99.000",
     tagline: "Untuk butik yang baru mulai",
-    features: ["1 outlet", "Sampai 100 koleksi", "Kasir & booking", "Struk digital"],
+    features: ["1 store account", "Sampai 100 koleksi", "Kasir & booking", "Struk digital"],
     highlight: false,
   },
   {

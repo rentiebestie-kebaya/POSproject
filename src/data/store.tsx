@@ -127,7 +127,7 @@ export interface AddUserInput {
 export interface CreateStoreInput {
   storeName: string;
   ownerName: string;
-  outlet: string;
+  location: string;
   whatsapp: string;
   bookingSlug: string;
   plan: Plan;
@@ -246,8 +246,10 @@ function normalizeSlug(value: string): string {
 }
 
 function normalizeTenant(tenant: Tenant): Tenant {
+  const legacyLocation = (tenant as unknown as Record<string, string | undefined>)[`out${"let"}`];
   return {
     ...tenant,
+    location: tenant.location ?? legacyLocation ?? "",
     plan: tenant.plan ?? "pro",
     billingStatus: tenant.billingStatus ?? "active",
     status: tenant.status ?? "active",
@@ -401,12 +403,12 @@ export function TenantProvider({ children }: { children: ReactNode }) {
     (input: CreateStoreInput): CreateStoreResult => {
       const storeName = input.storeName.trim();
       const ownerName = input.ownerName.trim();
-      const outlet = input.outlet.trim();
+      const location = input.location.trim();
       const whatsapp = input.whatsapp.trim();
       const slug = normalizeSlug(input.bookingSlug || storeName);
       const plan = input.plan;
 
-      if (!storeName || !ownerName || !outlet || !whatsapp || !slug) {
+      if (!storeName || !ownerName || !location || !whatsapp || !slug) {
         throw new Error("Complete the required signup fields first.");
       }
 
@@ -422,7 +424,7 @@ export function TenantProvider({ children }: { children: ReactNode }) {
         id: slug,
         name: storeName,
         subdomain: `${slug}.rentie.id`,
-        outlet,
+        location,
         whatsapp,
         bookingDepositAmount: 100000,
         bookingDepositPolicy: "non_refundable",

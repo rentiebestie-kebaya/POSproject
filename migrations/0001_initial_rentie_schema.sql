@@ -4,7 +4,7 @@ CREATE TABLE IF NOT EXISTS tenants (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
   subdomain TEXT NOT NULL UNIQUE,
-  outlet TEXT NOT NULL,
+  location TEXT NOT NULL,
   whatsapp TEXT NOT NULL,
   booking_deposit_amount INTEGER NOT NULL DEFAULT 0,
   booking_deposit_policy TEXT NOT NULL CHECK (booking_deposit_policy IN ('non_refundable', 'refundable')),
@@ -186,7 +186,7 @@ INSERT OR IGNORE INTO tenants (
   id,
   name,
   subdomain,
-  outlet,
+  location,
   whatsapp,
   booking_deposit_amount,
   booking_deposit_policy

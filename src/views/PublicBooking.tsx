@@ -208,7 +208,7 @@ export default function PublicBooking({ tenantSlug }: { tenantSlug: string }) {
             </div>
             <div className="min-w-0">
               <div className="truncate text-sm font-semibold">{tenant.name}</div>
-              <div className="truncate text-xs text-ink-3">{tenant.outlet}</div>
+              <div className="truncate text-xs text-ink-3">{tenant.location}</div>
             </div>
           </div>
           <a

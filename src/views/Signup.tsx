@@ -26,7 +26,7 @@ export default function Signup() {
   const router = useRouter();
   const [storeName, setStoreName] = useState("");
   const [ownerName, setOwnerName] = useState("");
-  const [outlet, setOutlet] = useState("");
+  const [location, setLocation] = useState("");
   const [whatsapp, setWhatsapp] = useState("");
   const [plan, setPlan] = useState<Plan>("free");
   const [creating, setCreating] = useState(false);
@@ -54,7 +54,7 @@ export default function Signup() {
   const canSubmit =
     storeName.trim().length > 1 &&
     ownerName.trim().length > 1 &&
-    outlet.trim().length > 1 &&
+    location.trim().length > 1 &&
     whatsapp.trim().length > 5 &&
     generatedSlug.length > 1;
 
@@ -66,7 +66,7 @@ export default function Signup() {
       createStore({
         storeName,
         ownerName,
-        outlet,
+        location,
         whatsapp,
         bookingSlug: generatedSlug,
         plan,
@@ -157,15 +157,15 @@ export default function Signup() {
             </div>
 
             <div>
-              <label className={labelCls} htmlFor="outlet">
-                Outlet
+              <label className={labelCls} htmlFor="location">
+                Store location
               </label>
               <div className="relative">
                 <MapPin size={16} className="absolute left-3 top-3 text-ink-3" />
                 <input
-                  id="outlet"
-                  value={outlet}
-                  onChange={(event) => setOutlet(event.target.value)}
+                  id="location"
+                  value={location}
+                  onChange={(event) => setLocation(event.target.value)}
                   className={`${inputCls} pl-9`}
                   placeholder="Kemang, Jakarta Selatan"
                   autoComplete="street-address"

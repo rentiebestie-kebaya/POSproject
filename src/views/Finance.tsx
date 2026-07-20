@@ -44,8 +44,8 @@ export default function Finance() {
         title="Finance"
         subtitle={
           planRules.finance === "full"
-            ? "Payments, deposits, and fees for this outlet — export anytime for your accountant."
-            : "Basic revenue summary for this outlet."
+            ? "Payments, deposits, and fees for this store — export anytime for your accountant."
+            : "Basic revenue summary for this store."
         }
         actions={
           <button

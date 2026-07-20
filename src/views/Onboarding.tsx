@@ -13,7 +13,7 @@ const STEPS = [
   {
     icon: Building2,
     title: "Confirm store profile",
-    body: "Store name, outlet, WhatsApp, and booking URL are already created from signup.",
+    body: "Store name, location, WhatsApp, and setup details are already created from signup.",
   },
   {
     icon: Wallet,
@@ -86,7 +86,7 @@ export default function Onboarding() {
           <Card className="self-start p-5">
             <div className="text-xs font-semibold uppercase tracking-wide text-ink-3">New store</div>
             <h2 className="mt-2 text-xl font-semibold">{tenant.name}</h2>
-            <div className="mt-1 text-sm text-ink-2">{tenant.outlet}</div>
+            <div className="mt-1 text-sm text-ink-2">{tenant.location}</div>
 
             <dl className="mt-5 space-y-3 text-sm">
               <div className="flex justify-between gap-3">

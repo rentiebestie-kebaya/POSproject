@@ -28,7 +28,7 @@ export interface Tenant {
   id: string;
   name: string;
   subdomain: string;
-  outlet: string;
+  location: string;
   whatsapp: string;
   bookingDepositAmount: number;
   bookingDepositPolicy: BookingDepositPolicy;
@@ -286,7 +286,7 @@ export const tenants: Tenant[] = [
     id: "melati",
     name: "Griya Kebaya Melati",
     subdomain: "melati.rentie.id",
-    outlet: "Kemang, Jakarta Selatan",
+    location: "Kemang, Jakarta Selatan",
     whatsapp: "+62 812-0000-1234",
     bookingDepositAmount: 150000,
     bookingDepositPolicy: "non_refundable",
@@ -299,7 +299,7 @@ export const tenants: Tenant[] = [
     id: "ayu",
     name: "Ayu Rental",
     subdomain: "ayurental.rentie.id",
-    outlet: "Denpasar, Bali",
+    location: "Denpasar, Bali",
     whatsapp: "+62 813-0000-8899",
     bookingDepositAmount: 100000,
     bookingDepositPolicy: "refundable",
