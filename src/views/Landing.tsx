@@ -161,7 +161,7 @@ export default function Landing() {
             Dirancang khusus untuk usaha penyewaan kebaya & dress kamu.
           </h1>
           <p className="mx-auto mt-6 max-w-xl text-lg leading-relaxed text-ink-2">
-            Fitur kasir, cetak struk, stok kebaya, ketersediaan, booking, keuagan, dan masih banyak lagi. Semua dalam satu aplikasi.
+            Fitur kasir, cetak struk, stok kebaya, ketersediaan, booking, keuangan, dan masih banyak lagi. Semua dalam satu aplikasi.
           </p>
            <p className="mx-auto mt-6 max-w-xl text-lg leading-relaxed text-ink-2">
             RENTIE - Rental Bestie
