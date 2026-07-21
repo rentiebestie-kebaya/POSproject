@@ -45,3 +45,33 @@ Confirmed viable against primary sources — see
   so `owner` is authorized to create users, or (b) keep a **separate** admin-authorization field
   distinct from the domain `role`. This was not fully traceable to a primary source — verify it
   concretely when implementing auth.
+
+## Resolution: admin-role vs domain-role collision (2026-07-21, ticket 02)
+
+**Decision: option (a) — reuse the single `role` column; authorize the domain `owner` for admin
+endpoints via the admin plugin's `adminRoles`, backed by an access-control `roles` map.**
+
+Verified concretely against the installed `better-auth@1.6.23`, which the earlier research could not
+trace to a primary source:
+
+- `AdminOptions` does expose `adminRoles` (default `["admin"]`) and `defaultRole` (default `"user"`)
+  — confirmed in `node_modules/better-auth/dist/plugins/admin/types.d.mts`.
+- **Constraint found in code:** the admin plugin *throws at init* if any `adminRoles` value is not a
+  key in the plugin's `roles` map (or the built-in defaults). So `adminRoles: ["owner"]` is only
+  valid alongside a `roles` map that defines `owner`. (`admin.mjs`: `Invalid admin roles … must be
+  defined in the 'roles' configuration`.)
+- `createUser`/`setRole` also reject a role that isn't in `roles`, so every domain role the app uses
+  must appear in the map.
+
+**Implementation** (`src/lib/auth.ts`): a `createAccessControl` statement (a copy of better-auth's
+default admin user/session verbs) backs three roles — `owner` gets the full permission set (so it can
+provision staff in ticket 09), `cashier` and `fitting` get none. The plugin is configured with
+`adminRoles: ["owner"]` and `defaultRole: "cashier"` (least-privilege fallback). One `role` column
+therefore serves both the domain role and admin authorization, keeping the single-identity-table
+decision above intact — no separate admin-authorization field is introduced.
+
+`tenant_id` and `role` are `additionalFields` with `input: false` + `required: true`: no public
+sign-up/update endpoint can set them, so a client-supplied `tenant_id` is never trusted. The owner is
+bootstrapped server-side via `auth.api.createUser` (called with no session, which skips the admin
+gate for the first user) in `scripts/provision-owner.mts`; that path writes `tenant_id`/`role`
+through the internal adapter, bypassing the `input: false` restriction that blocks the public schema.

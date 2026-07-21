@@ -4,10 +4,10 @@ import { useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle,
   QrCode, Search, Plus, X, Ruler, Tag, Wallet, Sparkles,
-  LayoutGrid, List as ListIcon, Camera, ImagePlus, Trash2, Check,
+  LayoutGrid, List as ListIcon, Camera, ImagePlus, Trash2, Check, Pencil,
 } from "lucide-react";
 import { Card, PageHeader, ItemStatusBadge, BookedBadge, GradeBadge, Th, Td } from "../components/Ui";
-import { useTenant } from "../data/store";
+import { useTenant, type InventoryItemDraft } from "../data/store";
 import {
   formatIDR,
   formatDate,
@@ -87,7 +87,7 @@ function Section({ icon: Icon, title, children }: { icon: typeof Tag; title: str
 
 /* ---------- detail modal ---------- */
 
-function ItemModal({ item, onClose }: { item: KebayaItem; onClose: () => void }) {
+function ItemModal({ item, onClose, onEdit }: { item: KebayaItem; onClose: () => void; onEdit: () => void }) {
   const { futureBookingFor } = useTenant();
   const booking = futureBookingFor(item.id);
   const [active, setActive] = useState(0);
@@ -105,9 +105,17 @@ function ItemModal({ item, onClose }: { item: KebayaItem; onClose: () => void })
             <GradeBadge grade={item.conditionGrade} />
           </div>
         </div>
-        <button onClick={onClose} className="rounded-full p-1.5 text-ink-3 hover:bg-black/5" aria-label="Close">
-          <X size={18} />
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={onEdit}
+            className="flex items-center gap-1.5 rounded-full border border-black/10 px-3 py-1.5 text-sm font-medium hover:bg-brand-50"
+          >
+            <Pencil size={14} /> Edit
+          </button>
+          <button onClick={onClose} className="rounded-full p-1.5 text-ink-3 hover:bg-black/5" aria-label="Close">
+            <X size={18} />
+          </button>
+        </div>
       </div>
 
       {/* Two panes: gallery + QR tag left, scrollable details right. Stacks on mobile. */}
@@ -241,6 +249,31 @@ const emptyForm = {
   photos: [] as string[],
 };
 
+function formFromItem(item?: KebayaItem): typeof emptyForm {
+  if (!item) return emptyForm;
+  return {
+    name: item.name,
+    inventoryCode: item.inventoryCode,
+    sizeLabel: item.sizeLabel,
+    model: item.model,
+    color: item.color,
+    wearStyle: item.wearStyle,
+    includes: item.includes,
+    occasions: item.occasions,
+    rentCondition: item.rentCondition,
+    bust: String(item.size.bust),
+    waist: String(item.size.waist),
+    length: String(item.size.length),
+    sleeve: String(item.size.sleeve),
+    rentalPrice: String(item.rentalPrice),
+    cost: String(item.cost),
+    description: item.description,
+    conditionGrade: item.conditionGrade,
+    qrCode: item.qrCode,
+    photos: item.photos,
+  };
+}
+
 const inputCls = "w-full rounded-xl border border-black/10 bg-white px-3 py-2 text-sm outline-none focus:border-brand-400";
 const labelCls = "mb-1 block text-xs font-medium text-ink-2";
 
@@ -248,9 +281,22 @@ function toggle(list: string[], v: string): string[] {
   return list.includes(v) ? list.filter((x) => x !== v) : [...list, v];
 }
 
-function AddItemModal({ nextIndex, onClose, onAdd }: { nextIndex: number; onClose: () => void; onAdd: (item: Omit<KebayaItem, "tenantId" | "dateAdded">) => void }) {
-  const [f, setF] = useState(emptyForm);
+function InventoryItemFormModal({
+  nextIndex,
+  initialItem,
+  onClose,
+  onSave,
+}: {
+  nextIndex: number;
+  initialItem?: KebayaItem;
+  onClose: () => void;
+  onSave: (item: InventoryItemDraft | KebayaItem) => Promise<void>;
+}) {
+  const editing = Boolean(initialItem);
+  const [f, setF] = useState(() => formFromItem(initialItem));
   const [customOcc, setCustomOcc] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
   const set = <K extends keyof typeof f>(k: K, v: (typeof f)[K]) => setF((p) => ({ ...p, [k]: v }));
 
   const valid = f.name.trim() && f.sizeLabel.trim() && f.color.trim() && f.model.trim();
@@ -262,13 +308,12 @@ function AddItemModal({ nextIndex, onClose, onAdd }: { nextIndex: number; onClos
     set("photos", [...f.photos, ...urls].slice(0, MAX_PHOTOS));
   };
 
-  const submit = () => {
-    if (!valid) return;
+  const submit = async () => {
+    if (!valid || saving) return;
     const code = f.qrCode.trim() || `KBY-${String(nextIndex).padStart(4, "0")}`;
     // Preview photos when none uploaded, so the card & catalog aren't blank.
     const photos = f.photos.length ? f.photos : [photoUri(f.color, 1)];
-    onAdd({
-      id: "I" + Date.now(),
+    const draft: InventoryItemDraft = {
       name: f.name.trim(),
       inventoryCode: f.inventoryCode.trim() || code,
       sizeLabel: f.sizeLabel.trim(),
@@ -282,27 +327,47 @@ function AddItemModal({ nextIndex, onClose, onAdd }: { nextIndex: number; onClos
       rentalPrice: +f.rentalPrice || 0,
       cost: +f.cost || 0,
       description: f.description.trim(),
-      status: "available",
+      status: initialItem?.status ?? "available",
       conditionGrade: f.conditionGrade,
       qrCode: code,
       photos,
-      timesRented: 0,
-    });
+      timesRented: initialItem?.timesRented ?? 0,
+    };
+    setSaving(true);
+    setError("");
+    try {
+      await onSave(initialItem ? { ...initialItem, ...draft } : draft);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not save inventory.");
+      setSaving(false);
+    }
   };
 
   return (
-    <Modal onClose={onClose} className="max-w-2xl">
+    <Modal onClose={saving ? () => {} : onClose} className="max-w-2xl">
       <div className="flex items-center justify-between border-b border-hairline p-5">
         <div>
-          <h3 className="text-lg font-semibold">Add kebaya</h3>
-          <p className="text-sm text-ink-2">Register a new physical piece into inventory.</p>
+          <h3 className="text-lg font-semibold">{editing ? "Edit kebaya" : "Add kebaya"}</h3>
+          <p className="text-sm text-ink-2">{editing ? "Update this physical piece." : "Register a new physical piece into inventory."}</p>
         </div>
-        <button onClick={onClose} className="rounded-full p-1.5 text-ink-3 hover:bg-black/5" aria-label="Close">
+        <button
+          onClick={onClose}
+          disabled={saving}
+          className="rounded-full p-1.5 text-ink-3 hover:bg-black/5 disabled:cursor-not-allowed disabled:opacity-50"
+          aria-label="Close"
+        >
           <X size={18} />
         </button>
       </div>
 
       <div className="space-y-5 overflow-y-auto p-5">
+        {error && (
+          <div className="flex items-start gap-2 rounded-xl border border-critical/20 bg-critical/5 px-3 py-2.5 text-sm text-critical">
+            <AlertTriangle size={16} className="mt-0.5 shrink-0" />
+            <span>{error}</span>
+          </div>
+        )}
+
         {/* Photos */}
         <div>
           <div className="mb-2 flex items-center justify-between">
@@ -461,12 +526,16 @@ function AddItemModal({ nextIndex, onClose, onAdd }: { nextIndex: number; onClos
       <div className="flex items-center justify-between gap-3 border-t border-hairline p-4">
         <span className="text-xs text-ink-3">* required</span>
         <div className="flex gap-2">
-          <button onClick={onClose} className="rounded-full border border-black/10 px-4 py-2 text-sm font-medium hover:bg-black/5">
+          <button
+            onClick={onClose}
+            disabled={saving}
+            className="rounded-full border border-black/10 px-4 py-2 text-sm font-medium hover:bg-black/5 disabled:cursor-not-allowed disabled:opacity-50"
+          >
             Cancel
           </button>
-          <button onClick={submit} disabled={!valid}
+          <button onClick={submit} disabled={!valid || saving}
             className="flex items-center gap-1.5 rounded-full bg-brand-900 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-800 disabled:cursor-not-allowed disabled:bg-brand-200">
-            <Check size={15} /> Save kebaya
+            <Check size={15} /> {saving ? "Saving..." : "Save kebaya"}
           </button>
         </div>
       </div>
@@ -574,13 +643,14 @@ function ItemTable({ rows, onOpen }: { rows: KebayaItem[]; onOpen: (id: string) 
 /* ---------- page ---------- */
 
 export default function Inventory() {
-  const { tenant, inventory: items, planRules, addItem } = useTenant();
+  const { tenant, inventory: items, planRules, addItem, editItem } = useTenant();
   const [view, setView] = useState<"grid" | "list">("grid");
   const [status, setStatus] = useState<(typeof STATUS_FILTERS)[number]>("all");
   const [dateSort, setDateSort] = useState<"newest" | "oldest">("newest");
   const [query, setQuery] = useState("");
   const [openId, setOpenId] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
   const [error, setError] = useState("");
   const inventoryLocked = planRules.inventoryLimit !== null && items.length >= planRules.inventoryLimit;
 
@@ -605,6 +675,7 @@ export default function Inventory() {
   }, [items, status, query, dateSort]);
 
   const openItem = openId ? items.find((i) => i.id === openId) ?? null : null;
+  const editingItem = editingId ? items.find((i) => i.id === editingId) ?? null : null;
 
   return (
     <>
@@ -695,20 +766,36 @@ export default function Inventory() {
         <ItemTable rows={rows} onOpen={setOpenId} />
       )}
 
-      {openItem && <ItemModal item={openItem} onClose={() => setOpenId(null)} />}
+      {openItem && (
+        <ItemModal
+          item={openItem}
+          onClose={() => setOpenId(null)}
+          onEdit={() => {
+            setOpenId(null);
+            setEditingId(openItem.id);
+          }}
+        />
+      )}
       {adding && (
-        <AddItemModal
+        <InventoryItemFormModal
           nextIndex={items.length + 1}
           onClose={() => setAdding(false)}
-          onAdd={(item) => {
-            try {
-              addItem(item);
-              setAdding(false);
-              setOpenId(item.id);
-            } catch (err) {
-              setError(err instanceof Error ? err.message : "Could not add inventory.");
-              setAdding(false);
-            }
+          onSave={async (item) => {
+            const saved = await addItem(item as InventoryItemDraft);
+            setAdding(false);
+            setOpenId(saved.id);
+          }}
+        />
+      )}
+      {editingItem && (
+        <InventoryItemFormModal
+          nextIndex={items.length + 1}
+          initialItem={editingItem}
+          onClose={() => setEditingId(null)}
+          onSave={async (item) => {
+            const saved = await editItem(item as KebayaItem);
+            setEditingId(null);
+            setOpenId(saved.id);
           }}
         />
       )}

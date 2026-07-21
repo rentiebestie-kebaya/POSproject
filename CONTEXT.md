@@ -17,6 +17,18 @@ Last updated: 2026-07-20.
 | DB schema | `migrations/*.sql` (to be rewritten — see [ADR-0005](./docs/adr/0005-migration-strategy.md)) |
 | Cloudflare / D1 binding | `wrangler.jsonc` (binding `DB`, database `rentie-db`) |
 | Health check | `app/api/d1/health/route.ts` |
+| Auth (runtime) | `src/lib/auth.ts` (config) + `src/lib/auth-server.ts` (per-request D1) + `app/api/auth/[...all]/route.ts` |
+| Auth (client) | `src/lib/auth-client.ts`; server session helper `src/lib/session.ts` + `app/api/me/route.ts` |
+| Demo seed | `src/lib/seed-demo.ts` + `scripts/seed-demo.mts` (local D1 only) |
+
+## Local dev commands
+
+| Command | What it does |
+|---|---|
+| `npm run dev` | Next dev server (Cloudflare bindings wired via `next.config.ts`) |
+| `npm run db:seed` | Reset + seed the **local** D1 with the "Kebaya Demo" shop and demo owner. Log in at `/login` with **`demo@rentie.id` / `demo12345`**. Re-run any time to reset. Local-only — never touches production ([ADR-0003](./docs/adr/0003-seed-and-demo-data.md)). |
+| `npm run auth:provision -- --email … --password … --tenant …` | Provision a single owner (local D1); add `--remote` to target the deployed D1. |
+| `npm test` / `npx tsc --noEmit` | Vitest (real workerd + D1) / typecheck |
 
 ## Glossary
 

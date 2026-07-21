@@ -29,6 +29,37 @@ import {
   type User,
 } from "./mock";
 import { rulesForTenant } from "./plans";
+import { authClient } from "@/lib/auth-client";
+
+/** The signed-in identity as resolved server-side from the real better-auth
+    session (via /api/me). tenant_id + role come off the validated session. */
+interface RealSessionUser {
+  id: string;
+  email: string;
+  name: string;
+  tenantId: string;
+  tenantName: string | null;
+  role: User["role"];
+}
+
+/** Shape of the /api/me response (server-validated session). */
+interface MeResponse {
+  authenticated: boolean;
+  user?: RealSessionUser;
+}
+
+/** Shape of the /api/bootstrap response — the signed-in tenant's full dataset. */
+interface BootstrapResponse {
+  tenant: Tenant | null;
+  team: User[];
+  dataset: TenantDataset;
+}
+
+interface InventoryActionResponse {
+  item: KebayaItem;
+}
+
+export type InventoryItemDraft = Omit<KebayaItem, "id" | "tenantId" | "dateAdded">;
 
 export interface OpenTransactionInput {
   itemIds: string[];
@@ -175,6 +206,8 @@ interface TenantContextValue {
   /** Prototype signup: creates one shop workspace and signs in its owner. */
   createStore: (input: CreateStoreInput) => CreateStoreResult;
   logout: () => void;
+  /** Re-reads the real better-auth session from /api/me (call after sign-in). */
+  refreshSession: () => Promise<void>;
 
   /** Cross-tenant data + user management for the developer console. */
   platform: PlatformValue;
@@ -187,8 +220,10 @@ interface TenantContextValue {
   monthlyRevenue: TenantDataset["monthlyRevenue"];
   planRules: ReturnType<typeof rulesForTenant>;
 
-  /** Adds to the current tenant's inventory — tenantId is stamped by the store. */
-  addItem: (item: Omit<KebayaItem, "tenantId" | "dateAdded">) => void;
+  /** Adds to the current tenant's inventory — tenantId/id/dateAdded are stamped server-side. */
+  addItem: (item: InventoryItemDraft) => Promise<KebayaItem>;
+  /** Edits the current tenant's inventory through the same server-authoritative write path. */
+  editItem: (item: KebayaItem) => Promise<KebayaItem>;
   createReservation: (input: CreateReservationInput) => Booking;
   createPublicBookingRequest: (input: CreatePublicBookingRequestInput) => BookingRequest;
   approveBookingRequest: (input: ApproveBookingRequestInput) => Booking;
@@ -245,6 +280,43 @@ function normalizeSlug(value: string): string {
     .slice(0, 32);
 }
 
+async function postInventoryAction(path: string, body: unknown): Promise<KebayaItem> {
+  const res = await fetch(path, {
+    method: "POST",
+    credentials: "include",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const payload = await res.json().catch(() => null) as Partial<InventoryActionResponse> & { error?: string } | null;
+  if (!res.ok) {
+    throw new Error(payload?.error || "Inventory could not be saved.");
+  }
+  if (!payload?.item) {
+    throw new Error("Inventory could not be saved.");
+  }
+  return payload.item;
+}
+
+// A minimal workspace for a real signed-in owner whose tenant isn't in the
+// prototype's mock data yet (business data still lives client-side until it
+// moves to D1 in later tickets). Keeps the app renderable after a real login.
+function synthTenant(id: string, name?: string): Tenant {
+  return {
+    id,
+    name: name?.trim() || id,
+    subdomain: `${id}.rentie.id`,
+    location: "",
+    whatsapp: "",
+    bookingDepositAmount: 0,
+    bookingDepositPolicy: "non_refundable",
+    plan: "free",
+    billingStatus: "active",
+    status: "active",
+    onboardingStatus: "incomplete",
+    limitOverrides: {},
+  };
+}
+
 function normalizeTenant(tenant: Tenant): Tenant {
   const legacyLocation = (tenant as unknown as Record<string, string | undefined>)[`out${"let"}`];
   return {
@@ -290,11 +362,54 @@ export function TenantProvider({ children }: { children: ReactNode }) {
   // hydration (Next.js renders this component on the server first, where
   // localStorage does not exist); sessionReady flips once that read is done.
   const [userId, setUserId] = useState<string | null>(null);
+  // Real better-auth session (cookie-backed), resolved server-side via /api/me.
+  // Takes precedence over the mock localStorage session below when present.
+  const [realUser, setRealUser] = useState<RealSessionUser | null>(null);
+  // The real tenant + team from the bootstrap fetch (ADR-0002). The tenant's
+  // dataset is loaded into `data` below, so views keep reading it synchronously.
+  const [realTenant, setRealTenant] = useState<Tenant | null>(null);
+  const [realTeam, setRealTeam] = useState<User[]>([]);
   const [devAuthed, setDevAuthed] = useState(false);
   const [sessionReady, setSessionReady] = useState(false);
   const [dataReady, setDataReady] = useState(false);
   // Session-mutable copy of the per-tenant datasets (added items live here).
   const [data, setData] = useState(seedData);
+
+  // Reads the real session (/api/me) and, if signed in, loads the tenant's full
+  // dataset (/api/bootstrap) into the cache — the read-swap from localStorage to
+  // real, server-scoped persistence (ADR-0002). The session cookie is HTTP-only,
+  // so identity + data are always resolved server-side.
+  const loadSession = useCallback(async () => {
+    try {
+      const meRes = await fetch("/api/me", { credentials: "include" });
+      const me = meRes.ok ? ((await meRes.json()) as MeResponse) : null;
+      if (!me?.authenticated || !me.user) {
+        setRealUser(null);
+        setRealTenant(null);
+        setRealTeam([]);
+        return;
+      }
+      setRealUser(me.user);
+
+      const bootRes = await fetch("/api/bootstrap", { credentials: "include" });
+      if (bootRes.ok) {
+        const boot = (await bootRes.json()) as BootstrapResponse;
+        const tid = boot.tenant?.id ?? me.user.tenantId;
+        setRealTenant(boot.tenant);
+        setRealTeam(boot.team);
+        // Load the tenant's real dataset into the store cache, exactly where
+        // seedData used to live — views keep reading synchronously.
+        setData((prev) => ({ ...prev, [tid]: boot.dataset }));
+      } else {
+        setRealTenant(null);
+        setRealTeam([]);
+      }
+    } catch {
+      setRealUser(null);
+      setRealTenant(null);
+      setRealTeam([]);
+    }
+  }, []);
 
   useEffect(() => {
     let restoredTenants = seedTenants.map(normalizeTenant);
@@ -340,12 +455,23 @@ export function TenantProvider({ children }: { children: ReactNode }) {
       setData(ensureDatasets(seedData, restoredTenants));
     }
     setDataReady(true);
-    setSessionReady(true);
-  }, []);
+
+    // Resolve the real session + load its data before flipping sessionReady, so
+    // auth gates never act on a half-known session and the app renders with the
+    // tenant's real data already in the cache.
+    loadSession().finally(() => setSessionReady(true));
+  }, [loadSession]);
   // Tenant is derived from the signed-in user — signing in as staff scopes their
   // shop automatically. Falls back to the first tenant only while logged out, so
   // the store's selectors stay valid (the app never renders them unauthenticated).
-  const currentUser = (userId && userList.find((u) => u.id === userId)) || null;
+  // Real session wins; the mock localStorage user only backs the prototype
+  // signup flow until identity/data fully move to D1.
+  const currentUser = useMemo<User | null>(() => {
+    if (realUser) {
+      return { id: realUser.id, tenantId: realUser.tenantId, name: realUser.name, role: realUser.role };
+    }
+    return (userId && userList.find((u) => u.id === userId)) || null;
+  }, [realUser, userId, userList]);
   const tenantId = currentUser ? currentUser.tenantId : tenantList[0]?.id ?? seedTenants[0].id;
 
   useEffect(() => {
@@ -360,8 +486,12 @@ export function TenantProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (!dataReady) return;
+    // Real-session data is D1-backed and re-fetched via bootstrap on every load,
+    // so it's never cached to localStorage (which would leak it across users).
+    // Only the prototype mock/signup data is persisted locally.
+    if (realUser) return;
     localStorage.setItem(DATA_KEY, JSON.stringify(data));
-  }, [data, dataReady]);
+  }, [data, dataReady, realUser]);
 
   const login = useCallback(
     (id: string) => {
@@ -375,7 +505,15 @@ export function TenantProvider({ children }: { children: ReactNode }) {
   const logout = useCallback(() => {
     localStorage.removeItem(SESSION_KEY);
     setUserId(null);
+    setRealUser(null);
+    setRealTenant(null);
+    setRealTeam([]);
+    // End the real cookie session too; ignore transport errors on the way out.
+    void authClient.signOut().catch(() => {});
   }, []);
+
+  // Re-read the session + reload the tenant's data (call after sign-in).
+  const refreshSession = loadSession;
 
   const devLogin = useCallback(() => {
     localStorage.setItem(DEV_KEY, "1");
@@ -531,8 +669,8 @@ export function TenantProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const addItem = useCallback(
-    (item: Omit<KebayaItem, "tenantId" | "dateAdded">) => {
-      const tenant = tenantList.find((row) => row.id === tenantId)!;
+    async (item: InventoryItemDraft): Promise<KebayaItem> => {
+      const tenant = (realUser ? realTenant : tenantList.find((row) => row.id === tenantId)) ?? synthTenant(tenantId);
       const planRules = rulesForTenant(tenant);
       if (tenant.status === "suspended") {
         throw new Error("This store is suspended. Reactivate it before adding inventory.");
@@ -540,15 +678,56 @@ export function TenantProvider({ children }: { children: ReactNode }) {
       if (planRules.inventoryLimit !== null && data[tenantId].inventory.length >= planRules.inventoryLimit) {
         throw new Error(`Inventory limit reached. ${tenant.name} can store ${planRules.inventoryLimit} items on ${tenant.plan}.`);
       }
+      if (realUser) {
+        const saved = await postInventoryAction("/api/inventory/add", item);
+        setData((prev) => ({
+          ...prev,
+          [saved.tenantId]: {
+            ...(prev[saved.tenantId] ?? emptyDataset()),
+            inventory: [saved, ...(prev[saved.tenantId]?.inventory ?? []).filter((row) => row.id !== saved.id)],
+          },
+        }));
+        return saved;
+      }
+      const saved: KebayaItem = { ...item, id: uniqueId("I"), tenantId, dateAdded: TODAY };
       setData((prev) => ({
         ...prev,
         [tenantId]: {
           ...prev[tenantId],
-          inventory: [{ ...item, tenantId, dateAdded: TODAY }, ...prev[tenantId].inventory],
+          inventory: [saved, ...prev[tenantId].inventory],
         },
       }));
+      return saved;
     },
-    [data, tenantId, tenantList],
+    [data, tenantId, tenantList, realUser, realTenant],
+  );
+
+  const editItem = useCallback(
+    async (item: KebayaItem): Promise<KebayaItem> => {
+      if (item.tenantId !== tenantId) {
+        throw new Error("Inventory item not found.");
+      }
+      if (realUser) {
+        const saved = await postInventoryAction("/api/inventory/edit", item);
+        setData((prev) => ({
+          ...prev,
+          [saved.tenantId]: {
+            ...(prev[saved.tenantId] ?? emptyDataset()),
+            inventory: (prev[saved.tenantId]?.inventory ?? []).map((row) => (row.id === saved.id ? saved : row)),
+          },
+        }));
+        return saved;
+      }
+      setData((prev) => ({
+        ...prev,
+        [tenantId]: {
+          ...prev[tenantId],
+          inventory: prev[tenantId].inventory.map((row) => (row.id === item.id ? item : row)),
+        },
+      }));
+      return item;
+    },
+    [tenantId, realUser],
   );
 
   const openTransaction = useCallback(
@@ -1034,21 +1213,35 @@ export function TenantProvider({ children }: { children: ReactNode }) {
   );
 
   const value = useMemo<TenantContextValue>(() => {
-    const tenant = tenantList.find((t) => t.id === tenantId)!;
+    // Real session → the tenant/team come from the bootstrap fetch; the mock
+    // path only backs the prototype signup flow. Either way, fall back to a
+    // synthetic empty workspace so the app still renders after login.
+    const usingReal = realUser !== null;
+    const tenant =
+      (usingReal ? realTenant : tenantList.find((t) => t.id === tenantId)) ??
+      synthTenant(tenantId, realUser?.tenantName ?? currentUser?.name);
     // Fallback keeps `user` well-typed while logged out; the app gates on
     // isAuthenticated before rendering anything that reads it.
     const user = currentUser ?? ownerOf(userList, tenantId);
-    const ds = data[tenantId];
+    const ds = data[tenantId] ?? emptyDataset();
     const planRules = rulesForTenant(tenant);
+    const baseTeam = usingReal ? realTeam : userList.filter((u) => u.tenantId === tenantId);
+    // Ensure the signed-in user appears in their own team even before staff
+    // records exist.
+    const team =
+      currentUser && !baseTeam.some((u) => u.id === currentUser.id)
+        ? [currentUser, ...baseTeam]
+        : baseTeam;
     return {
       tenant,
       user,
-      team: userList.filter((u) => u.tenantId === tenantId),
+      team,
       isAuthenticated: currentUser !== null,
       sessionReady,
       login,
       createStore,
       logout,
+      refreshSession,
       platform: {
         tenants: tenantList,
         users: userList,
@@ -1069,6 +1262,7 @@ export function TenantProvider({ children }: { children: ReactNode }) {
       ...ds,
       planRules,
       addItem,
+      editItem,
       createReservation,
       createPublicBookingRequest,
       approveBookingRequest,
@@ -1086,6 +1280,9 @@ export function TenantProvider({ children }: { children: ReactNode }) {
     tenantId,
     tenantList,
     currentUser,
+    realUser,
+    realTenant,
+    realTeam,
     userList,
     data,
     devAuthed,
@@ -1094,6 +1291,7 @@ export function TenantProvider({ children }: { children: ReactNode }) {
     createStore,
     createPlatformStore,
     logout,
+    refreshSession,
     devLogin,
     devLogout,
     addUser,
@@ -1105,6 +1303,7 @@ export function TenantProvider({ children }: { children: ReactNode }) {
     updateTenantOnboardingStatus,
     updateTenantOverrides,
     addItem,
+    editItem,
     createReservation,
     createPublicBookingRequest,
     approveBookingRequest,

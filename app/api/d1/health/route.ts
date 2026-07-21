@@ -26,7 +26,9 @@ export async function GET() {
 
   const [tenants, users, inventoryItems, customers, bookings, transactions] = await Promise.all([
     countRows(env.DB, "tenants"),
-    countRows(env.DB, "users"),
+    // Identity lives in the better-auth `user` table (ADR-0001); the standalone
+    // `users` table was removed. Quote it — `user` is a reserved keyword.
+    countRows(env.DB, '"user"'),
     countRows(env.DB, "inventory_items"),
     countRows(env.DB, "customers"),
     countRows(env.DB, "bookings"),

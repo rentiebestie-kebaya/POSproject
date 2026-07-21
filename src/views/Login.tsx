@@ -1,25 +1,19 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ArrowLeft, ArrowRight, Building2, LogIn } from "lucide-react";
+import { ArrowLeft, LogIn } from "lucide-react";
 import { useTenant } from "../data/store";
-import { ROLE_LABEL } from "../data/mock";
-
-function initialsOf(name: string): string {
-  return name
-    .split(" ")
-    .slice(0, 2)
-    .map((p) => p[0])
-    .join("")
-    .toUpperCase();
-}
+import { authClient } from "@/lib/auth-client";
 
 export default function Login() {
-  const { isAuthenticated, sessionReady, login, platform } = useTenant();
+  const { isAuthenticated, sessionReady, refreshSession } = useTenant();
   const router = useRouter();
-  const [selected, setSelected] = useState<string | null>(null);
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
 
   // Already signed in — no reason to show the login screen.
   useEffect(() => {
@@ -28,8 +22,22 @@ export default function Login() {
 
   if (!sessionReady || isAuthenticated) return null;
 
-  const signIn = (userId: string) => {
-    login(userId);
+  const onSubmit = async (e: FormEvent) => {
+    e.preventDefault();
+    if (submitting) return;
+    setError(null);
+    setSubmitting(true);
+    const { error: signInError } = await authClient.signIn.email({
+      email: email.trim(),
+      password,
+    });
+    if (signInError) {
+      setError(signInError.message ?? "Email atau kata sandi salah.");
+      setSubmitting(false);
+      return;
+    }
+    // Cookie is set — re-read the server-validated session, then enter the app.
+    await refreshSession();
     router.replace("/app");
   };
 
@@ -80,7 +88,7 @@ export default function Login() {
             <LogIn size={20} className="text-brand-600" /> Masuk ke akunmu
           </h2>
           <p className="mt-1 text-sm text-ink-2">
-            Pilih akun staf untuk masuk. Prototipe — tidak perlu kata sandi.
+            Masuk dengan email dan kata sandi akunmu.
           </p>
           <p className="mt-3 text-sm text-ink-2">
             Belum punya store?{" "}
@@ -89,51 +97,52 @@ export default function Login() {
             </Link>
           </p>
 
-          <div className="mt-6 space-y-6">
-            {platform.tenants.map((t) => {
-              const team = platform.users.filter((u) => u.tenantId === t.id);
-              return (
-                <div key={t.id}>
-                  <div className="mb-2 flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-ink-3">
-                    <Building2 size={13} /> {t.name}
-                    <span className="text-hairline">·</span>
-                    <span className="normal-case tracking-normal text-ink-3">{t.location}</span>
-                  </div>
-                  <div className="space-y-2">
-                    {team.map((u) => {
-                      const active = selected === u.id;
-                      return (
-                        <button
-                          key={u.id}
-                          type="button"
-                          onMouseEnter={() => setSelected(u.id)}
-                          onFocus={() => setSelected(u.id)}
-                          onClick={() => signIn(u.id)}
-                          className={`group flex w-full items-center gap-3 rounded-xl border bg-surface px-3 py-2.5 text-left transition-colors ${
-                            active
-                              ? "border-brand-400 ring-1 ring-brand-200"
-                              : "border-hairline hover:border-brand-300"
-                          }`}
-                        >
-                          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-brand-600 text-xs font-semibold text-white">
-                            {initialsOf(u.name)}
-                          </div>
-                          <div className="min-w-0 flex-1">
-                            <div className="truncate text-sm font-medium">{u.name}</div>
-                            <div className="text-xs text-ink-3">{ROLE_LABEL[u.role]}</div>
-                          </div>
-                          <ArrowRight
-                            size={16}
-                            className="shrink-0 text-ink-3 opacity-0 transition-opacity group-hover:opacity-100"
-                          />
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
+          <form onSubmit={onSubmit} className="mt-6 space-y-4">
+            <div>
+              <label htmlFor="email" className="mb-1 block text-xs font-medium text-ink-2">
+                Email
+              </label>
+              <input
+                id="email"
+                type="email"
+                autoComplete="email"
+                required
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                className="w-full rounded-xl border border-hairline bg-surface px-3 py-2.5 text-sm outline-none transition-colors focus:border-brand-400 focus:ring-1 focus:ring-brand-200"
+                placeholder="owner@butik.com"
+              />
+            </div>
+            <div>
+              <label htmlFor="password" className="mb-1 block text-xs font-medium text-ink-2">
+                Kata sandi
+              </label>
+              <input
+                id="password"
+                type="password"
+                autoComplete="current-password"
+                required
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                className="w-full rounded-xl border border-hairline bg-surface px-3 py-2.5 text-sm outline-none transition-colors focus:border-brand-400 focus:ring-1 focus:ring-brand-200"
+                placeholder="••••••••"
+              />
+            </div>
+
+            {error && (
+              <p className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700" role="alert">
+                {error}
+              </p>
+            )}
+
+            <button
+              type="submit"
+              disabled={submitting}
+              className="flex w-full items-center justify-center gap-2 rounded-xl bg-brand-600 px-3 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-brand-700 disabled:opacity-60"
+            >
+              <LogIn size={16} /> {submitting ? "Memproses…" : "Masuk"}
+            </button>
+          </form>
         </div>
       </div>
     </div>

@@ -11,7 +11,9 @@
     "cf-typegen": "wrangler types --env-interface CloudflareEnv cloudflare-env.d.ts",
     "test": "vitest run",
     "test:watch": "vitest",
-    "auth:generate": "npx @better-auth/cli@latest generate --config src/lib/auth.generate.ts --output docs/generated/better-auth-schema.sql -y"
+    "auth:generate": "npx @better-auth/cli@latest generate --config src/lib/auth.generate.ts --output docs/generated/better-auth-schema.sql -y",
+    "auth:provision": "node scripts/provision-owner.mts",
+    "db:seed": "node scripts/seed-demo.mts"
   },
   "dependencies": {
     "@opennextjs/cloudflare": "^1.20.1",
