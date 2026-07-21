@@ -68,15 +68,16 @@ export async function resetDemo(db: D1Database): Promise<void> {
     db.prepare(`DELETE FROM inventory_items WHERE tenant_id = ?`).bind(t),
     db.prepare(`DELETE FROM monthly_revenue WHERE tenant_id = ?`).bind(t),
     db.prepare(`DELETE FROM tenants WHERE id = ?`).bind(t),
-    // Demo owner account (session/account cascade from user, but delete
-    // explicitly in case FK cascade is off).
+    // Demo tenant accounts (session/account cascade from user, but delete
+    // explicitly in case FK cascade is off). Includes staff created through
+    // Settings so `db:seed` always returns the demo shop to one known owner.
     db
-      .prepare(`DELETE FROM session WHERE userId IN (SELECT id FROM "user" WHERE email = ?)`)
-      .bind(DEMO_OWNER.email),
+      .prepare(`DELETE FROM session WHERE userId IN (SELECT id FROM "user" WHERE tenant_id = ?)`)
+      .bind(t),
     db
-      .prepare(`DELETE FROM account WHERE userId IN (SELECT id FROM "user" WHERE email = ?)`)
-      .bind(DEMO_OWNER.email),
-    db.prepare(`DELETE FROM "user" WHERE email = ?`).bind(DEMO_OWNER.email),
+      .prepare(`DELETE FROM account WHERE userId IN (SELECT id FROM "user" WHERE tenant_id = ?)`)
+      .bind(t),
+    db.prepare(`DELETE FROM "user" WHERE tenant_id = ?`).bind(t),
   ]);
 }
 

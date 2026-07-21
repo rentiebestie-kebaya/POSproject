@@ -1,6 +1,7 @@
 import { isDomainRole, type Auth } from "./auth";
 import { normalizePhone } from "./phone.js";
 import { buildFinanceSummary, type FinanceSummary, type FinanceSummaryOptions } from "../data/finance";
+import { rulesForTenant } from "../data/plans";
 import type {
   Booking,
   BookingRequest,
@@ -67,6 +68,16 @@ interface PosActionSession {
   role?: unknown;
 }
 
+export interface StaffProvisionSession {
+  tenantId: string;
+  role?: unknown;
+}
+
+export interface StaffProvisionReceipt {
+  user: User;
+  team: User[];
+}
+
 export interface PosOpenInput {
   itemIds: string[];
   customerName: string;
@@ -124,6 +135,13 @@ interface InventoryFields {
   photos: string[];
 }
 
+interface StaffProvisionFields {
+  email: string;
+  password: string;
+  name: string;
+  role: Extract<User["role"], "cashier" | "fitting">;
+}
+
 /* ---------- small coercions (SQLite returns loose types) ---------- */
 
 type Row = Record<string, unknown>;
@@ -145,6 +163,7 @@ function parseJson<T>(v: unknown, fallback: T): T {
 const READABLE_ID_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const MAX_INVENTORY_PHOTOS = 10;
 const PAYMENT_METHODS: PaymentMethod[] = ["QRIS", "GoPay", "OVO", "DANA", "Cash", "Card"];
+const STAFF_PROVISION_ROLES = ["cashier", "fitting"] as const;
 
 function generateReadableId(prefix: string): string {
   const bytes = new Uint8Array(6);
@@ -256,6 +275,23 @@ function paymentMethod(value: unknown): PaymentMethod {
   throw new InventoryActionError(400, "Select a valid payment method.");
 }
 
+function staffProvisionRole(value: unknown): StaffProvisionFields["role"] {
+  if (typeof value === "string" && STAFF_PROVISION_ROLES.includes(value as StaffProvisionFields["role"])) {
+    return value as StaffProvisionFields["role"];
+  }
+  throw new InventoryActionError(400, "Select a valid staff role.");
+}
+
+function staffProvisionFields(input: unknown): StaffProvisionFields {
+  const row = record(input);
+  const email = requiredText(row, "email", "Email").toLowerCase();
+  const password = requiredText(row, "password", "Initial password");
+  const name = requiredText(row, "name", "Staff name");
+  const role = staffProvisionRole(row.role);
+  if (password.length < 8) throw new InventoryActionError(400, "Initial password must be at least 8 characters.");
+  return { email, password, name, role };
+}
+
 function evidence(value: unknown): PosOpenInput["evidence"] {
   if (value == null) return undefined;
   const row = record(value);
@@ -320,6 +356,10 @@ function canWritePosTransaction(session: PosActionSession): boolean {
   return session.role === "owner" || session.role === "cashier";
 }
 
+function canProvisionStaff(session: StaffProvisionSession): boolean {
+  return session.role === "owner";
+}
+
 function actionError(error: unknown): InventoryActionError {
   if (error instanceof InventoryActionError) return error;
   const message = error instanceof Error ? error.message : String(error);
@@ -351,6 +391,22 @@ function posCloseActionError(error: unknown): InventoryActionError {
     return new InventoryActionError(409, "Return could not be recorded.");
   }
   return new InventoryActionError(500, "Return could not be recorded.");
+}
+
+function staffProvisionActionError(error: unknown): InventoryActionError {
+  if (error instanceof InventoryActionError) return error;
+  const status = typeof error === "object" && error !== null && "statusCode" in error ? Number(error.statusCode) : 0;
+  const message = error instanceof Error ? error.message : String(error);
+  if (status === 401 || message.includes("UNAUTHORIZED")) {
+    return new InventoryActionError(401, "Unauthorized");
+  }
+  if (status === 403 || message.includes("FORBIDDEN")) {
+    return new InventoryActionError(403, "Only owners can create staff accounts.");
+  }
+  if (message.includes("USER_ALREADY_EXISTS") || message.toLowerCase().includes("already exists")) {
+    return new InventoryActionError(409, "A user with that email already exists.");
+  }
+  return new InventoryActionError(500, "Staff account could not be created.");
 }
 
 /* ---------- row → domain mappers ---------- */
@@ -511,6 +567,14 @@ function rowsToTransactions(transactionRows: Row[], transactionItemRows: Row[]):
   return transactionRows.map((r) => toTransaction(r, transactionItemIds.get(str(r.id)) ?? []));
 }
 
+async function getTenantTeam(db: D1Database, tenantId: string): Promise<User[]> {
+  const res = await db
+    .prepare(`SELECT id, tenant_id, name, role FROM "user" WHERE tenant_id = ? ORDER BY name`)
+    .bind(tenantId)
+    .all<Row>();
+  return res.results.map(toUser);
+}
+
 /**
  * Returns the full dataset for one tenant, scoped server-side. All queries are
  * filtered by `tenantId`, so cross-tenant reads are impossible by construction.
@@ -602,6 +666,78 @@ export async function getTenantFinanceSummary(
   ]);
   const transactions = rowsToTransactions(transactionsRes.results, transactionItemsRes.results);
   return buildFinanceSummary(transactions, options);
+}
+
+export async function provisionStaffAccount(
+  auth: Auth,
+  db: D1Database,
+  session: StaffProvisionSession,
+  headers: Headers,
+  input: unknown,
+): Promise<StaffProvisionReceipt> {
+  const fields = staffProvisionFields(input);
+  if (!canProvisionStaff(session)) {
+    throw new InventoryActionError(403, "Only owners can create staff accounts.");
+  }
+
+  const [tenantRes, countRes] = await db.batch<Row>([
+    db.prepare(`SELECT * FROM tenants WHERE id = ? AND status = 'active'`).bind(session.tenantId),
+    db.prepare(`SELECT COUNT(*) AS count FROM "user" WHERE tenant_id = ?`).bind(session.tenantId),
+  ]);
+  const tenantRow = tenantRes.results[0];
+  if (!tenantRow) throw new InventoryActionError(403, "Tenant cannot create staff accounts.");
+
+  const tenant = toTenant(tenantRow);
+  const planRules = rulesForTenant(tenant);
+  const currentStaff = num(countRes.results[0]?.count);
+  if (currentStaff >= planRules.staffLimit) {
+    throw new InventoryActionError(
+      409,
+      `${tenant.name} can have ${planRules.staffLimit} total user(s) on the current plan.`,
+    );
+  }
+
+  try {
+    await auth.api.createUser({
+      headers,
+      body: {
+        email: fields.email,
+        password: fields.password,
+        name: fields.name,
+        role: fields.role,
+        data: { tenant_id: session.tenantId },
+      },
+    });
+
+    const userRow = await db
+      .prepare(`SELECT id, tenant_id, name, role FROM "user" WHERE tenant_id = ? AND email = ?`)
+      .bind(session.tenantId, fields.email)
+      .first<Row>();
+    if (!userRow) throw new InventoryActionError(500, "Staff account could not be created.");
+    const team = await getTenantTeam(db, session.tenantId);
+    return { user: toUser(userRow), team };
+  } catch (error) {
+    throw staffProvisionActionError(error);
+  }
+}
+
+export async function handleStaffProvisionRequest(
+  request: Request,
+  session: StaffProvisionSession | null,
+  auth: Auth,
+  headers: Headers,
+  db: D1Database,
+): Promise<Response> {
+  if (!session) return jsonError("Unauthorized", 401);
+  if (!canProvisionStaff(session)) return jsonError("Only owners can create staff accounts.", 403);
+  try {
+    const payload = await request.json();
+    const receipt = await provisionStaffAccount(auth, db, session, headers, payload);
+    return Response.json(receipt);
+  } catch (error) {
+    const mapped = staffProvisionActionError(error);
+    return jsonError(mapped.message, mapped.status);
+  }
 }
 
 export async function addInventoryItem(

@@ -50,13 +50,22 @@ describe("demo seed", () => {
 
   it("resets deterministically when re-run (no duplicates, stable counts)", async () => {
     const first = await seedDemo(env.DB, auth(), source);
+    await auth().api.createUser({
+      body: {
+        email: "old-staff@demo.test",
+        password: "password123",
+        name: "Old Staff",
+        role: "cashier",
+        data: { tenant_id: DEMO_TENANT_ID },
+      },
+    });
     const second = await seedDemo(env.DB, auth(), source);
 
     expect(second.counts).toEqual(first.counts);
     expect(await countFor("inventory_items")).toBe(source.dataset.inventory.length);
-    // Exactly one owner account after re-seeding (no accumulation).
-    const users = await env.DB.prepare(`SELECT COUNT(*) AS c FROM "user" WHERE email = ?`)
-      .bind(DEMO_OWNER.email)
+    // Exactly one demo-tenant user after re-seeding (no owner/staff accumulation).
+    const users = await env.DB.prepare(`SELECT COUNT(*) AS c FROM "user" WHERE tenant_id = ?`)
+      .bind(DEMO_TENANT_ID)
       .first<{ c: number }>();
     expect(Number(users?.c)).toBe(1);
   });

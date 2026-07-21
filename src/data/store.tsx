@@ -70,6 +70,11 @@ interface PosCloseActionResponse {
   receipt: TransactionReceipt;
 }
 
+interface StaffProvisionActionResponse {
+  user: User;
+  team: User[];
+}
+
 export type InventoryItemDraft = Omit<KebayaItem, "id" | "tenantId" | "dateAdded">;
 
 export interface OpenTransactionInput {
@@ -168,6 +173,13 @@ export interface AddUserInput {
   role: User["role"];
 }
 
+export interface StaffProvisionInput {
+  name: string;
+  email: string;
+  password: string;
+  role: Exclude<User["role"], "owner">;
+}
+
 export interface CreateStoreInput {
   storeName: string;
   ownerName: string;
@@ -246,6 +258,7 @@ interface TenantContextValue {
   openTransaction: (input: OpenTransactionInput) => Promise<TransactionReceipt>;
   closeTransaction: (input: ReturnTransactionInput) => Promise<TransactionReceipt>;
   completeCleaning: (input: CleaningCompleteInput) => KebayaItem;
+  provisionStaff: (input: StaffProvisionInput) => Promise<User>;
 
   itemById: (id: string) => KebayaItem;
   customerById: (id: string) => Customer;
@@ -339,6 +352,23 @@ async function postPosCloseAction(body: ReturnTransactionInput): Promise<Transac
     throw new Error("Return could not be recorded.");
   }
   return payload.receipt;
+}
+
+async function postStaffProvisionAction(body: StaffProvisionInput): Promise<StaffProvisionActionResponse> {
+  const res = await fetch("/api/staff/provision", {
+    method: "POST",
+    credentials: "include",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const payload = await res.json().catch(() => null) as Partial<StaffProvisionActionResponse> & { error?: string } | null;
+  if (!res.ok) {
+    throw new Error(payload?.error || "Staff account could not be created.");
+  }
+  if (!payload?.user || !payload.team) {
+    throw new Error("Staff account could not be created.");
+  }
+  return { user: payload.user, team: payload.team };
 }
 
 // A minimal workspace for a real signed-in owner whose tenant isn't in the
@@ -589,6 +619,28 @@ export function TenantProvider({ children }: { children: ReactNode }) {
     }
     setUserList((prev) => [...prev, { id: uniqueId("U"), tenantId: input.tenantId, name, role: input.role }]);
   }, [tenantList, userList]);
+
+  const provisionStaff = useCallback(
+    async (input: StaffProvisionInput): Promise<User> => {
+      if (currentUser?.role !== "owner") {
+        throw new Error("Only owners can create staff accounts.");
+      }
+      if (!realUser) {
+        throw new Error("Staff accounts require real login.");
+      }
+      const tenant = (realUser ? realTenant : tenantList.find((row) => row.id === tenantId)) ?? synthTenant(tenantId);
+      const planRules = rulesForTenant(tenant);
+      const currentTeam = realUser ? realTeam : userList.filter((staff) => staff.tenantId === tenantId);
+      if (currentTeam.length >= planRules.staffLimit) {
+        throw new Error(`${tenant.name} can have ${planRules.staffLimit} total user(s) on the current plan.`);
+      }
+
+      const provisioned = await postStaffProvisionAction(input);
+      setRealTeam(provisioned.team);
+      return provisioned.user;
+    },
+    [currentUser, realUser, realTenant, realTeam, tenantId, tenantList, userList],
+  );
 
   const buildStore = useCallback(
     (input: CreateStoreInput): CreateStoreResult => {
@@ -1393,6 +1445,7 @@ export function TenantProvider({ children }: { children: ReactNode }) {
       openTransaction,
       closeTransaction,
       completeCleaning,
+      provisionStaff,
       itemById: (id) => ds.inventory.find((i) => i.id === id)!,
       customerById: (id) => ds.customers.find((c) => c.id === id)!,
       conflictsFor: (itemId, start, end) => conflictsIn(ds.bookings, itemId, start, end),
@@ -1435,6 +1488,7 @@ export function TenantProvider({ children }: { children: ReactNode }) {
     openTransaction,
     closeTransaction,
     completeCleaning,
+    provisionStaff,
   ]);
 
   return <TenantContext.Provider value={value}>{children}</TenantContext.Provider>;
