@@ -86,6 +86,20 @@ interface PosOpenFields extends PosOpenInput {
   normalizedWhatsapp: string;
 }
 
+export interface PosCloseInput {
+  bookingId: string;
+  returnDate: string;
+  lateFee: number;
+  damageFee: number;
+  method: PaymentMethod;
+  notes?: string;
+  returnDisposition?: "available" | "maintenance";
+}
+
+interface PosCloseFields extends PosCloseInput {
+  returnDisposition: "available" | "maintenance";
+}
+
 interface InventoryFields {
   name: string;
   inventoryCode: string;
@@ -272,6 +286,23 @@ function posOpenFields(input: unknown): PosOpenFields {
   };
 }
 
+function posCloseFields(input: unknown): PosCloseFields {
+  const row = record(input);
+  const returnDisposition =
+    row.returnDisposition === "available" || row.returnDisposition === "maintenance"
+      ? row.returnDisposition
+      : "maintenance";
+  return {
+    bookingId: requiredText(row, "bookingId", "Booking"),
+    returnDate: requiredText(row, "returnDate", "Return date"),
+    lateFee: money(row, "lateFee"),
+    damageFee: money(row, "damageFee"),
+    method: paymentMethod(row.method),
+    notes: optionalNonEmpty(row, "notes"),
+    returnDisposition,
+  };
+}
+
 function jsonError(message: string, status: number): Response {
   return Response.json({ error: message }, { status });
 }
@@ -280,7 +311,7 @@ function canWriteInventory(session: InventoryActionSession): boolean {
   return session.role === "owner";
 }
 
-function canOpenPos(session: PosActionSession): boolean {
+function canWritePosTransaction(session: PosActionSession): boolean {
   return session.role === "owner" || session.role === "cashier";
 }
 
@@ -303,6 +334,18 @@ function posActionError(error: unknown): InventoryActionError {
     return new InventoryActionError(409, "Transaction could not be created.");
   }
   return new InventoryActionError(500, "Transaction could not be created.");
+}
+
+function posCloseActionError(error: unknown): InventoryActionError {
+  if (error instanceof InventoryActionError) return error;
+  const message = error instanceof Error ? error.message : String(error);
+  if (message.includes("FOREIGN KEY constraint failed")) {
+    return new InventoryActionError(409, "Only active rentals can be returned.");
+  }
+  if (message.includes("UNIQUE constraint failed")) {
+    return new InventoryActionError(409, "Return could not be recorded.");
+  }
+  return new InventoryActionError(500, "Return could not be recorded.");
 }
 
 /* ---------- row → domain mappers ---------- */
@@ -886,13 +929,190 @@ export async function handlePosOpenRequest(
   db: D1Database,
 ): Promise<Response> {
   if (!session) return jsonError("Unauthorized", 401);
-  if (!canOpenPos(session)) return jsonError("Only owner and cashier users can open rentals.", 403);
+  if (!canWritePosTransaction(session)) return jsonError("Only owner and cashier users can open rentals.", 403);
   try {
     const payload = await request.json();
     const receipt = await openPosTransaction(db, session, payload);
     return Response.json({ receipt });
   } catch (error) {
     const mapped = posActionError(error);
+    return jsonError(mapped.message, mapped.status);
+  }
+}
+
+export async function closePosTransaction(
+  db: D1Database,
+  session: PosActionSession,
+  input: unknown,
+): Promise<TenantActionReceipt> {
+  const fields = posCloseFields(input);
+  const transactionId = generateReadableId("T");
+  const targetStatus = fields.returnDisposition;
+  const totalFees = fields.lateFee + fields.damageFee;
+
+  try {
+    const results = await db.batch<Row>([
+      db
+        .prepare(
+          `INSERT INTO transactions
+            (id, tenant_id, booking_id, transaction_type, date, deposit, late_fee, damage_fee,
+             total, method, payment_status, customer_name, customer_whatsapp, cashier_name,
+             rental_total, return_notes, deposit_returned, amount_due, evidence_json)
+           SELECT ?, b.tenant_id, b.id, 'close', ?, b.deposit, ?, ?,
+             CASE WHEN ? > b.deposit THEN ? - b.deposit ELSE 0 END,
+             ?, 'refunded', c.name, c.whatsapp, ?, b.total, ?,
+             CASE WHEN b.deposit > ? THEN b.deposit - ? ELSE 0 END,
+             CASE WHEN ? > b.deposit THEN ? - b.deposit ELSE 0 END,
+             '{}'
+           FROM bookings b
+           JOIN customers c ON c.id = b.customer_id AND c.tenant_id = b.tenant_id
+           WHERE b.id = ? AND b.tenant_id = ? AND b.status = 'active'
+             AND (
+               SELECT COUNT(*)
+               FROM booking_items bi
+               JOIN inventory_items i ON i.id = bi.item_id AND i.tenant_id = bi.tenant_id
+               WHERE bi.booking_id = b.id AND bi.tenant_id = b.tenant_id AND i.status = 'rented'
+             ) = (
+               SELECT COUNT(*)
+               FROM booking_items bi
+               WHERE bi.booking_id = b.id AND bi.tenant_id = b.tenant_id
+             )
+             AND (
+               SELECT COUNT(*)
+               FROM booking_items bi
+               WHERE bi.booking_id = b.id AND bi.tenant_id = b.tenant_id
+             ) > 0`,
+        )
+        .bind(
+          transactionId,
+          fields.returnDate,
+          fields.lateFee,
+          fields.damageFee,
+          totalFees,
+          totalFees,
+          fields.method,
+          session.name,
+          fields.notes ?? null,
+          totalFees,
+          totalFees,
+          totalFees,
+          totalFees,
+          fields.bookingId,
+          session.tenantId,
+        ),
+      db
+        .prepare(
+          `INSERT INTO transaction_items (transaction_id, item_id, tenant_id)
+           SELECT t.id, bi.item_id, bi.tenant_id
+           FROM transactions t
+           JOIN booking_items bi ON bi.booking_id = t.booking_id AND bi.tenant_id = t.tenant_id
+           WHERE t.id = ? AND t.tenant_id = ?`,
+        )
+        .bind(transactionId, session.tenantId),
+      db
+        .prepare(
+          `UPDATE bookings
+           SET status = 'returned',
+               updated_at = CURRENT_TIMESTAMP
+           WHERE id = ? AND tenant_id = ? AND status = 'active'
+             AND EXISTS (
+               SELECT 1
+               FROM transactions t
+               WHERE t.id = ? AND t.booking_id = bookings.id AND t.tenant_id = bookings.tenant_id
+             )`,
+        )
+        .bind(fields.bookingId, session.tenantId, transactionId),
+      db
+        .prepare(
+          `UPDATE inventory_items
+           SET status = ?,
+               updated_at = CURRENT_TIMESTAMP
+           WHERE tenant_id = ? AND status = 'rented'
+             AND id IN (
+               SELECT ti.item_id
+               FROM transaction_items ti
+               WHERE ti.transaction_id = ? AND ti.tenant_id = ?
+             )`,
+        )
+        .bind(targetStatus, session.tenantId, transactionId, session.tenantId),
+      db.prepare(`SELECT * FROM tenants WHERE id = ?`).bind(session.tenantId),
+      db
+        .prepare(
+          `SELECT c.*
+           FROM customers c
+           JOIN bookings b ON b.customer_id = c.id AND b.tenant_id = c.tenant_id
+           WHERE b.id = ? AND b.tenant_id = ?`,
+        )
+        .bind(fields.bookingId, session.tenantId),
+      db.prepare(`SELECT * FROM bookings WHERE id = ? AND tenant_id = ?`).bind(fields.bookingId, session.tenantId),
+      db
+        .prepare(`SELECT booking_id, item_id FROM booking_items WHERE booking_id = ? AND tenant_id = ? ORDER BY rowid`)
+        .bind(fields.bookingId, session.tenantId),
+      db.prepare(`SELECT * FROM transactions WHERE id = ? AND tenant_id = ?`).bind(transactionId, session.tenantId),
+      db
+        .prepare(`SELECT transaction_id, item_id FROM transaction_items WHERE transaction_id = ? ORDER BY rowid`)
+        .bind(transactionId),
+      db
+        .prepare(
+          `SELECT i.*
+           FROM inventory_items i
+           JOIN booking_items bi ON bi.item_id = i.id AND bi.tenant_id = i.tenant_id
+           WHERE bi.booking_id = ? AND bi.tenant_id = ?
+           ORDER BY bi.rowid`,
+        )
+        .bind(fields.bookingId, session.tenantId),
+    ] satisfies D1PreparedStatement[]);
+
+    const tenantRow = results[4].results[0];
+    const customerRow = results[5].results[0];
+    const bookingRow = results[6].results[0];
+    const bookingItemRows = results[7].results;
+    const transactionRow = results[8].results[0];
+    const transactionItemRows = results[9].results;
+    const itemRows = results[10].results;
+
+    if (!tenantRow || !customerRow || !bookingRow || !transactionRow || itemRows.length === 0) {
+      throw new InventoryActionError(409, "Only active rentals can be returned.");
+    }
+
+    const bookingItemIds = bookingItemRows.map((row) => str(row.item_id));
+    const transactionItemIds = transactionItemRows.map((row) => str(row.item_id));
+    const items = itemRows.map(toItem);
+    if (
+      str(bookingRow.status) !== "returned" ||
+      bookingItemIds.length !== transactionItemIds.length ||
+      items.length !== bookingItemIds.length ||
+      items.some((item) => item.status !== targetStatus)
+    ) {
+      throw new InventoryActionError(409, "Only active rentals can be returned.");
+    }
+
+    return {
+      tenant: toTenant(tenantRow),
+      customer: toCustomer(customerRow, []),
+      booking: toBooking(bookingRow, bookingItemIds),
+      transaction: toTransaction(transactionRow, transactionItemIds),
+      items,
+      cashierName: session.name,
+    };
+  } catch (error) {
+    throw posCloseActionError(error);
+  }
+}
+
+export async function handlePosCloseRequest(
+  request: Request,
+  session: PosActionSession | null,
+  db: D1Database,
+): Promise<Response> {
+  if (!session) return jsonError("Unauthorized", 401);
+  if (!canWritePosTransaction(session)) return jsonError("Only owner and cashier users can close rentals.", 403);
+  try {
+    const payload = await request.json();
+    const receipt = await closePosTransaction(db, session, payload);
+    return Response.json({ receipt });
+  } catch (error) {
+    const mapped = posCloseActionError(error);
     return jsonError(mapped.message, mapped.status);
   }
 }

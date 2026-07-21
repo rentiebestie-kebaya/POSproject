@@ -583,6 +583,7 @@ export default function POS() {
   const [returnMethod, setReturnMethod] = useState<PaymentMethod>("Cash");
   const [damageFee, setDamageFee] = useState(0);
   const [returnNotes, setReturnNotes] = useState("");
+  const [returnDisposition, setReturnDisposition] = useState<"available" | "maintenance">("maintenance");
 
   const [maintenanceItemId, setMaintenanceItemId] = useState("");
   const [maintenanceQuery, setMaintenanceQuery] = useState("");
@@ -592,7 +593,7 @@ export default function POS() {
   const [historyType, setHistoryType] = useState<"all" | TransactionType>("all");
 
   const [pending, setPending] = useState<Mode | null>(null);
-  const [savingMode, setSavingMode] = useState<"open" | null>(null);
+  const [savingMode, setSavingMode] = useState<"open" | "close" | null>(null);
   const [paymentConfirmed, setPaymentConfirmed] = useState(false);
   const [receipt, setReceipt] = useState<TransactionReceipt | null>(null);
   const [success, setSuccess] = useState("");
@@ -728,7 +729,7 @@ export default function POS() {
   const handleConfirm = async () => {
     if (!pending || savingMode) return;
     const action = pending;
-    if (action === "open") setSavingMode("open");
+    if (action === "open" || action === "close") setSavingMode(action);
     try {
       if (action === "open") {
         const nextReceipt = await openTransaction({
@@ -760,19 +761,25 @@ export default function POS() {
       }
 
       if (action === "close" && returnBooking) {
-        const nextReceipt = closeTransaction({
+        const nextReceipt = await closeTransaction({
           bookingId: returnBooking.id,
           returnDate,
           lateFee: returnLateFee,
           damageFee,
           method: returnMethod,
           notes: returnNotes,
+          returnDisposition,
         });
         setReceipt(nextReceipt);
         setReturnItemId("");
         setDamageFee(0);
         setReturnNotes("");
-        setSuccess("Return processed. Item moved to cleaning / maintenance.");
+        setReturnDisposition("maintenance");
+        setSuccess(
+          returnDisposition === "maintenance"
+            ? "Return processed. Item moved to cleaning / maintenance."
+            : "Return processed. Item is available.",
+        );
       }
 
       if (action === "clean" && currentMaintenanceItemId) {
@@ -1177,16 +1184,28 @@ export default function POS() {
                   <span className="tabular-nums">{formatIDR(returnAmountDue)}</span>
                 </div>
               </div>
+              <label className="mt-4 flex items-start gap-3 rounded-xl border border-hairline bg-page p-3 text-sm">
+                <input
+                  type="checkbox"
+                  className="mt-1"
+                  checked={returnDisposition === "maintenance"}
+                  onChange={(event) => setReturnDisposition(event.target.checked ? "maintenance" : "available")}
+                />
+                <span>
+                  <span className="block font-semibold text-ink">Send to cleaning / maintenance</span>
+                  <span className="text-xs text-ink-2">Uncheck only when the returned kebaya is ready to rent again.</span>
+                </span>
+              </label>
               <button
                 type="button"
-                disabled={!returnBooking}
+                disabled={!returnBooking || savingMode === "close"}
                 onClick={() => {
                   resetMessages();
                   setPending("close");
                 }}
                 className="mt-4 w-full rounded-full bg-brand-900 py-2.5 text-sm font-semibold text-white hover:bg-brand-800 disabled:cursor-not-allowed disabled:bg-brand-200"
               >
-                Proses Pengembalian
+                {savingMode === "close" ? "Processing..." : "Proses Pengembalian"}
               </button>
             </Card>
           </div>
@@ -1436,11 +1455,17 @@ export default function POS() {
       {pending === "close" && returnBooking && (
         <ConfirmModal
           title="Process return?"
-          confirmLabel="Proses Pengembalian"
-          onCancel={() => setPending(null)}
+          confirmLabel={savingMode === "close" ? "Processing..." : "Proses Pengembalian"}
+          busy={savingMode === "close"}
+          onCancel={() => {
+            if (!savingMode) setPending(null);
+          }}
           onConfirm={handleConfirm}
         >
-          <p>This will close booking {returnBooking.id} and move all items in this rental to cleaning / maintenance.</p>
+          <p>
+            This will close booking {returnBooking.id} and move all items in this rental to{" "}
+            {returnDisposition === "maintenance" ? "cleaning / maintenance" : "available inventory"}.
+          </p>
           <p className="mt-2 font-semibold text-ink">Jaminan returned: {formatIDR(depositReturned)}</p>
         </ConfirmModal>
       )}

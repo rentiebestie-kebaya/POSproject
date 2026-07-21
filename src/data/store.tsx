@@ -64,6 +64,10 @@ interface PosOpenActionResponse {
   receipt: TransactionReceipt;
 }
 
+interface PosCloseActionResponse {
+  receipt: TransactionReceipt;
+}
+
 export type InventoryItemDraft = Omit<KebayaItem, "id" | "tenantId" | "dateAdded">;
 
 export interface OpenTransactionInput {
@@ -108,6 +112,7 @@ export interface ReturnTransactionInput {
   damageFee: number;
   method: PaymentMethod;
   notes?: string;
+  returnDisposition?: "available" | "maintenance";
 }
 
 export interface CheckoutReservationInput {
@@ -235,7 +240,7 @@ interface TenantContextValue {
   rejectBookingRequest: (input: RejectBookingRequestInput) => BookingRequest;
   checkoutReservation: (input: CheckoutReservationInput) => TransactionReceipt;
   openTransaction: (input: OpenTransactionInput) => Promise<TransactionReceipt>;
-  closeTransaction: (input: ReturnTransactionInput) => TransactionReceipt;
+  closeTransaction: (input: ReturnTransactionInput) => Promise<TransactionReceipt>;
   completeCleaning: (input: CleaningCompleteInput) => KebayaItem;
 
   itemById: (id: string) => KebayaItem;
@@ -311,6 +316,23 @@ async function postPosOpenAction(body: OpenTransactionInput): Promise<Transactio
   }
   if (!payload?.receipt) {
     throw new Error("Transaction could not be created.");
+  }
+  return payload.receipt;
+}
+
+async function postPosCloseAction(body: ReturnTransactionInput): Promise<TransactionReceipt> {
+  const res = await fetch("/api/pos/close", {
+    method: "POST",
+    credentials: "include",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const payload = await res.json().catch(() => null) as Partial<PosCloseActionResponse> & { error?: string } | null;
+  if (!res.ok) {
+    throw new Error(payload?.error || "Return could not be recorded.");
+  }
+  if (!payload?.receipt) {
+    throw new Error("Return could not be recorded.");
   }
   return payload.receipt;
 }
@@ -1181,10 +1203,42 @@ export function TenantProvider({ children }: { children: ReactNode }) {
   );
 
   const closeTransaction = useCallback(
-    (input: ReturnTransactionInput): TransactionReceipt => {
-      const tenant = tenantList.find((t) => t.id === tenantId)!;
+    async (input: ReturnTransactionInput): Promise<TransactionReceipt> => {
+      const tenant = (realUser ? realTenant : tenantList.find((t) => t.id === tenantId)) ?? synthTenant(tenantId);
       const user = currentUser ?? ownerOf(userList, tenantId);
       const ds = data[tenantId];
+      if (realUser) {
+        const receipt = await postPosCloseAction(input);
+        setData((prev) => {
+          const current = prev[receipt.tenant.id] ?? emptyDataset();
+          const receiptItems = new Map(receipt.items.map((item) => [item.id, item]));
+          const currentItemIds = new Set(current.inventory.map((item) => item.id));
+          const hasBooking = current.bookings.some((row) => row.id === receipt.booking.id);
+          const hasCustomer = current.customers.some((row) => row.id === receipt.customer.id);
+          return {
+            ...prev,
+            [receipt.tenant.id]: {
+              ...current,
+              inventory: [
+                ...current.inventory.map((item) => receiptItems.get(item.id) ?? item),
+                ...receipt.items.filter((item) => !currentItemIds.has(item.id)),
+              ],
+              customers: hasCustomer
+                ? current.customers.map((row) => (row.id === receipt.customer.id ? receipt.customer : row))
+                : [receipt.customer, ...current.customers],
+              bookings: hasBooking
+                ? current.bookings.map((row) => (row.id === receipt.booking.id ? receipt.booking : row))
+                : [receipt.booking, ...current.bookings],
+              transactions: [
+                receipt.transaction,
+                ...current.transactions.filter((row) => row.id !== receipt.transaction.id),
+              ],
+            },
+          };
+        });
+        return receipt;
+      }
+
       const booking = ds.bookings.find((row) => row.id === input.bookingId);
       if (!booking || booking.status !== "active") {
         throw new Error("Only active rentals can be returned.");
@@ -1214,14 +1268,16 @@ export function TenantProvider({ children }: { children: ReactNode }) {
         amountDue: Math.max(0, totalFees - booking.deposit),
       };
       const returnedBooking = { ...booking, status: "returned" as const };
-      const receipt = { tenant, booking: returnedBooking, transaction, customer, items, cashierName: user.name };
+      const returnedStatus: KebayaItem["status"] = input.returnDisposition ?? "maintenance";
+      const returnedItems = items.map((item) => ({ ...item, status: returnedStatus }));
+      const receipt = { tenant, booking: returnedBooking, transaction, customer, items: returnedItems, cashierName: user.name };
 
       setData((prev) => ({
         ...prev,
         [tenantId]: {
           ...prev[tenantId],
           inventory: prev[tenantId].inventory.map((item) =>
-            booking.itemIds.includes(item.id) ? { ...item, status: "maintenance" } : item,
+            booking.itemIds.includes(item.id) ? { ...item, status: returnedStatus } : item,
           ),
           bookings: prev[tenantId].bookings.map((row) => (row.id === booking.id ? returnedBooking : row)),
           transactions: [transaction, ...prev[tenantId].transactions],
@@ -1230,7 +1286,7 @@ export function TenantProvider({ children }: { children: ReactNode }) {
 
       return receipt;
     },
-    [data, tenantId, currentUser, userList, tenantList],
+    [data, tenantId, currentUser, userList, tenantList, realUser, realTenant],
   );
 
   const completeCleaning = useCallback(
