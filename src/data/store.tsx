@@ -30,6 +30,7 @@ import {
 } from "./mock";
 import { rulesForTenant } from "./plans";
 import { authClient } from "@/lib/auth-client";
+import { normalizePhone } from "@/lib/phone";
 
 /** The signed-in identity as resolved server-side from the real better-auth
     session (via /api/me). tenant_id + role come off the validated session. */
@@ -57,6 +58,10 @@ interface BootstrapResponse {
 
 interface InventoryActionResponse {
   item: KebayaItem;
+}
+
+interface PosOpenActionResponse {
+  receipt: TransactionReceipt;
 }
 
 export type InventoryItemDraft = Omit<KebayaItem, "id" | "tenantId" | "dateAdded">;
@@ -229,7 +234,7 @@ interface TenantContextValue {
   approveBookingRequest: (input: ApproveBookingRequestInput) => Booking;
   rejectBookingRequest: (input: RejectBookingRequestInput) => BookingRequest;
   checkoutReservation: (input: CheckoutReservationInput) => TransactionReceipt;
-  openTransaction: (input: OpenTransactionInput) => TransactionReceipt;
+  openTransaction: (input: OpenTransactionInput) => Promise<TransactionReceipt>;
   closeTransaction: (input: ReturnTransactionInput) => TransactionReceipt;
   completeCleaning: (input: CleaningCompleteInput) => KebayaItem;
 
@@ -243,10 +248,6 @@ const TenantContext = createContext<TenantContextValue | null>(null);
 
 function ownerOf(list: User[], tenantId: string): User {
   return list.find((u) => u.tenantId === tenantId && u.role === "owner") ?? list.find((u) => u.tenantId === tenantId)!;
-}
-
-function normalizePhone(phone: string): string {
-  return phone.replace(/\D/g, "");
 }
 
 function uniqueId(prefix: string): string {
@@ -295,6 +296,23 @@ async function postInventoryAction(path: string, body: unknown): Promise<KebayaI
     throw new Error("Inventory could not be saved.");
   }
   return payload.item;
+}
+
+async function postPosOpenAction(body: OpenTransactionInput): Promise<TransactionReceipt> {
+  const res = await fetch("/api/pos/open", {
+    method: "POST",
+    credentials: "include",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const payload = await res.json().catch(() => null) as Partial<PosOpenActionResponse> & { error?: string } | null;
+  if (!res.ok) {
+    throw new Error(payload?.error || "Transaction could not be created.");
+  }
+  if (!payload?.receipt) {
+    throw new Error("Transaction could not be created.");
+  }
+  return payload.receipt;
 }
 
 // A minimal workspace for a real signed-in owner whose tenant isn't in the
@@ -731,8 +749,8 @@ export function TenantProvider({ children }: { children: ReactNode }) {
   );
 
   const openTransaction = useCallback(
-    (input: OpenTransactionInput): TransactionReceipt => {
-      const tenant = tenantList.find((t) => t.id === tenantId)!;
+    async (input: OpenTransactionInput): Promise<TransactionReceipt> => {
+      const tenant = (realUser ? realTenant : tenantList.find((t) => t.id === tenantId)) ?? synthTenant(tenantId);
       const user = currentUser ?? ownerOf(userList, tenantId);
       const ds = data[tenantId];
       const items = ds.inventory.filter((item) => input.itemIds.includes(item.id));
@@ -744,6 +762,30 @@ export function TenantProvider({ children }: { children: ReactNode }) {
       )[0];
       if (conflictingBooking) {
         throw new Error(`Item is already reserved for ${conflictingBooking.startDate} - ${conflictingBooking.endDate}.`);
+      }
+      if (realUser) {
+        const receipt = await postPosOpenAction(input);
+        setData((prev) => {
+          const current = prev[receipt.tenant.id] ?? emptyDataset();
+          const receiptItems = new Map(receipt.items.map((item) => [item.id, item]));
+          const hasCustomer = current.customers.some((row) => row.id === receipt.customer.id);
+          return {
+            ...prev,
+            [receipt.tenant.id]: {
+              ...current,
+              inventory: current.inventory.map((item) => receiptItems.get(item.id) ?? item),
+              customers: hasCustomer
+                ? current.customers.map((row) => (row.id === receipt.customer.id ? receipt.customer : row))
+                : [receipt.customer, ...current.customers],
+              bookings: [receipt.booking, ...current.bookings.filter((row) => row.id !== receipt.booking.id)],
+              transactions: [
+                receipt.transaction,
+                ...current.transactions.filter((row) => row.id !== receipt.transaction.id),
+              ],
+            },
+          };
+        });
+        return receipt;
       }
 
       const phoneKey = normalizePhone(input.whatsapp);
@@ -827,7 +869,7 @@ export function TenantProvider({ children }: { children: ReactNode }) {
 
       return receipt;
     },
-    [data, tenantId, currentUser, userList, tenantList],
+    [data, tenantId, currentUser, userList, tenantList, realUser, realTenant],
   );
 
   const createReservation = useCallback(

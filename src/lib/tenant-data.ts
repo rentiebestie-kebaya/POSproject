@@ -1,10 +1,12 @@
 import { isDomainRole, type Auth } from "./auth";
+import { normalizePhone } from "./phone.js";
 import type {
   Booking,
   BookingRequest,
   Customer,
   KebayaItem,
   Measurement,
+  PaymentMethod,
   Tenant,
   TenantDataset,
   Transaction,
@@ -30,6 +32,15 @@ export interface TenantBootstrap {
   dataset: TenantDataset;
 }
 
+export interface TenantActionReceipt {
+  tenant: Tenant;
+  booking: Booking;
+  transaction: Transaction;
+  customer: Customer;
+  items: KebayaItem[];
+  cashierName: string;
+}
+
 export class InventoryActionError extends Error {
   constructor(
     public readonly status: number,
@@ -43,6 +54,36 @@ export class InventoryActionError extends Error {
 interface InventoryActionSession {
   tenantId: string;
   role?: unknown;
+}
+
+interface PosActionSession {
+  tenantId: string;
+  name: string;
+  role?: unknown;
+}
+
+export interface PosOpenInput {
+  itemIds: string[];
+  customerName: string;
+  whatsapp: string;
+  instagram?: string;
+  email?: string;
+  startDate: string;
+  endDate: string;
+  baseRental: number;
+  extraDayFee: number;
+  rentalTotal: number;
+  deposit: number;
+  method: PaymentMethod;
+  notes?: string;
+  evidence?: {
+    idPhotoName?: string;
+    clientPhotoName?: string;
+  };
+}
+
+interface PosOpenFields extends PosOpenInput {
+  normalizedWhatsapp: string;
 }
 
 interface InventoryFields {
@@ -84,6 +125,7 @@ function parseJson<T>(v: unknown, fallback: T): T {
 
 const READABLE_ID_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const MAX_INVENTORY_PHOTOS = 10;
+const PAYMENT_METHODS: PaymentMethod[] = ["QRIS", "GoPay", "OVO", "DANA", "Cash", "Card"];
 
 function generateReadableId(prefix: string): string {
   const bytes = new Uint8Array(6);
@@ -173,12 +215,73 @@ function inventoryPayloadTenant(input: unknown): string | null {
   return typeof tenantId === "string" && tenantId.trim() ? tenantId.trim() : null;
 }
 
+function positiveItemIds(value: unknown): string[] {
+  if (!Array.isArray(value)) throw new InventoryActionError(400, "Select inventory items before checkout.");
+  const ids = Array.from(new Set(value.map((entry) => str(entry).trim()).filter(Boolean)));
+  if (ids.length === 0) throw new InventoryActionError(400, "Select inventory items before checkout.");
+  return ids;
+}
+
+function optionalNonEmpty(row: Row, key: string): string | undefined {
+  return optionalText(row, key) || undefined;
+}
+
+function money(row: Row, key: string): number {
+  return integer(row, key);
+}
+
+function paymentMethod(value: unknown): PaymentMethod {
+  if (typeof value === "string" && PAYMENT_METHODS.includes(value as PaymentMethod)) {
+    return value as PaymentMethod;
+  }
+  throw new InventoryActionError(400, "Select a valid payment method.");
+}
+
+function evidence(value: unknown): PosOpenInput["evidence"] {
+  if (value == null) return undefined;
+  const row = record(value);
+  const idPhotoName = optionalNonEmpty(row, "idPhotoName");
+  const clientPhotoName = optionalNonEmpty(row, "clientPhotoName");
+  return idPhotoName || clientPhotoName ? { idPhotoName, clientPhotoName } : undefined;
+}
+
+function posOpenFields(input: unknown): PosOpenFields {
+  const row = record(input);
+  const startDate = requiredText(row, "startDate", "Start date");
+  const endDate = requiredText(row, "endDate", "End date");
+  if (endDate < startDate) throw new InventoryActionError(400, "Select a valid rental date range.");
+  const whatsapp = requiredText(row, "whatsapp", "WhatsApp");
+  const normalizedWhatsapp = normalizePhone(whatsapp);
+  if (normalizedWhatsapp.length < 6) throw new InventoryActionError(400, "WhatsApp number is required.");
+  return {
+    itemIds: positiveItemIds(row.itemIds),
+    customerName: requiredText(row, "customerName", "Customer name"),
+    whatsapp,
+    normalizedWhatsapp,
+    instagram: optionalNonEmpty(row, "instagram"),
+    email: optionalNonEmpty(row, "email"),
+    startDate,
+    endDate,
+    baseRental: money(row, "baseRental"),
+    extraDayFee: money(row, "extraDayFee"),
+    rentalTotal: money(row, "rentalTotal"),
+    deposit: money(row, "deposit"),
+    method: paymentMethod(row.method),
+    notes: optionalNonEmpty(row, "notes"),
+    evidence: evidence(row.evidence),
+  };
+}
+
 function jsonError(message: string, status: number): Response {
   return Response.json({ error: message }, { status });
 }
 
 function canWriteInventory(session: InventoryActionSession): boolean {
   return session.role === "owner";
+}
+
+function canOpenPos(session: PosActionSession): boolean {
+  return session.role === "owner" || session.role === "cashier";
 }
 
 function actionError(error: unknown): InventoryActionError {
@@ -188,6 +291,18 @@ function actionError(error: unknown): InventoryActionError {
     return new InventoryActionError(409, "Inventory code already exists.");
   }
   return new InventoryActionError(500, "Inventory could not be saved.");
+}
+
+function posActionError(error: unknown): InventoryActionError {
+  if (error instanceof InventoryActionError) return error;
+  const message = error instanceof Error ? error.message : String(error);
+  if (message.includes("FOREIGN KEY constraint failed")) {
+    return new InventoryActionError(409, "Only available items can be rented.");
+  }
+  if (message.includes("UNIQUE constraint failed")) {
+    return new InventoryActionError(409, "Transaction could not be created.");
+  }
+  return new InventoryActionError(500, "Transaction could not be created.");
 }
 
 /* ---------- row → domain mappers ---------- */
@@ -592,6 +707,192 @@ export async function handleInventoryEditRequest(
     return Response.json({ item });
   } catch (error) {
     const mapped = actionError(error);
+    return jsonError(mapped.message, mapped.status);
+  }
+}
+
+function placeholders(count: number): string {
+  return Array.from({ length: count }, () => "?").join(", ");
+}
+
+export async function openPosTransaction(
+  db: D1Database,
+  session: PosActionSession,
+  input: unknown,
+): Promise<TenantActionReceipt> {
+  const fields = posOpenFields(input);
+  const customerId = generateReadableId("C");
+  const bookingId = generateReadableId("B");
+  const transactionId = generateReadableId("T");
+  const transactionDate = todayIsoDate();
+  const itemPlaceholders = placeholders(fields.itemIds.length);
+  const totalDue = fields.rentalTotal + fields.deposit;
+  const evidenceJson = JSON.stringify(fields.evidence ?? {});
+
+  try {
+    const batch = [
+      db
+        .prepare(
+          `INSERT INTO customers
+            (id, tenant_id, name, whatsapp, normalized_whatsapp, instagram, email,
+             total_rentals, last_rental)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)
+           ON CONFLICT(tenant_id, normalized_whatsapp) DO UPDATE SET
+             name = excluded.name,
+             whatsapp = excluded.whatsapp,
+             instagram = COALESCE(excluded.instagram, customers.instagram),
+             email = COALESCE(excluded.email, customers.email),
+             total_rentals = customers.total_rentals + 1,
+             last_rental = excluded.last_rental,
+             updated_at = CURRENT_TIMESTAMP`,
+        )
+        .bind(
+          customerId,
+          session.tenantId,
+          fields.customerName,
+          fields.whatsapp,
+          fields.normalizedWhatsapp,
+          fields.instagram ?? null,
+          fields.email ?? null,
+          fields.startDate,
+        ),
+      db
+        .prepare(
+          `INSERT INTO bookings
+            (id, tenant_id, customer_id, start_date, end_date, status, total, deposit, notes)
+           SELECT ?, ?, c.id, ?, ?, 'active', ?, ?, ?
+           FROM customers c
+           WHERE c.tenant_id = ? AND c.normalized_whatsapp = ?
+             AND (
+               SELECT COUNT(*)
+               FROM inventory_items
+               WHERE tenant_id = ? AND status = 'available' AND id IN (${itemPlaceholders})
+             ) = ?`,
+        )
+        .bind(
+          bookingId,
+          session.tenantId,
+          fields.startDate,
+          fields.endDate,
+          fields.rentalTotal,
+          fields.deposit,
+          fields.notes ?? null,
+          session.tenantId,
+          fields.normalizedWhatsapp,
+          session.tenantId,
+          ...fields.itemIds,
+          fields.itemIds.length,
+        ),
+      ...fields.itemIds.map((itemId) =>
+        db
+          .prepare(`INSERT INTO booking_items (booking_id, item_id, tenant_id) VALUES (?, ?, ?)`)
+          .bind(bookingId, itemId, session.tenantId),
+      ),
+      db
+        .prepare(
+          `INSERT INTO transactions
+            (id, tenant_id, booking_id, transaction_type, date, deposit, late_fee, damage_fee,
+             total, method, payment_status, customer_name, customer_whatsapp, cashier_name,
+             rental_total, base_rental, extra_day_fee, notes, evidence_json)
+           SELECT ?, ?, b.id, 'open', ?, ?, 0, 0, ?, ?, 'paid', ?, ?, ?, ?, ?, ?, ?, ?
+           FROM bookings b
+           WHERE b.id = ? AND b.tenant_id = ?`,
+        )
+        .bind(
+          transactionId,
+          session.tenantId,
+          transactionDate,
+          fields.deposit,
+          totalDue,
+          fields.method,
+          fields.customerName,
+          fields.whatsapp,
+          session.name,
+          fields.rentalTotal,
+          fields.baseRental,
+          fields.extraDayFee,
+          fields.notes ?? null,
+          evidenceJson,
+          bookingId,
+          session.tenantId,
+        ),
+      ...fields.itemIds.map((itemId) =>
+        db
+          .prepare(`INSERT INTO transaction_items (transaction_id, item_id, tenant_id) VALUES (?, ?, ?)`)
+          .bind(transactionId, itemId, session.tenantId),
+      ),
+      db
+        .prepare(
+          `UPDATE inventory_items
+           SET status = 'rented',
+               times_rented = times_rented + 1,
+               updated_at = CURRENT_TIMESTAMP
+           WHERE tenant_id = ? AND status = 'available' AND id IN (${itemPlaceholders})`,
+        )
+        .bind(session.tenantId, ...fields.itemIds),
+      db.prepare(`SELECT * FROM tenants WHERE id = ?`).bind(session.tenantId),
+      db
+        .prepare(`SELECT * FROM customers WHERE tenant_id = ? AND normalized_whatsapp = ?`)
+        .bind(session.tenantId, fields.normalizedWhatsapp),
+      db.prepare(`SELECT * FROM bookings WHERE id = ? AND tenant_id = ?`).bind(bookingId, session.tenantId),
+      db.prepare(`SELECT booking_id, item_id FROM booking_items WHERE booking_id = ? ORDER BY rowid`).bind(bookingId),
+      db.prepare(`SELECT * FROM transactions WHERE id = ? AND tenant_id = ?`).bind(transactionId, session.tenantId),
+      db
+        .prepare(`SELECT transaction_id, item_id FROM transaction_items WHERE transaction_id = ? ORDER BY rowid`)
+        .bind(transactionId),
+      db
+        .prepare(`SELECT * FROM inventory_items WHERE tenant_id = ? AND id IN (${itemPlaceholders})`)
+        .bind(session.tenantId, ...fields.itemIds),
+    ] satisfies D1PreparedStatement[];
+
+    const results = await db.batch<Row>(batch);
+    const baseIndex = 4 + fields.itemIds.length * 2;
+    const tenantRow = results[baseIndex].results[0];
+    const customerRow = results[baseIndex + 1].results[0];
+    const bookingRow = results[baseIndex + 2].results[0];
+    const bookingItemRows = results[baseIndex + 3].results;
+    const transactionRow = results[baseIndex + 4].results[0];
+    const transactionItemRows = results[baseIndex + 5].results;
+    const itemRows = results[baseIndex + 6].results;
+
+    if (!tenantRow || !customerRow || !bookingRow || !transactionRow || itemRows.length !== fields.itemIds.length) {
+      throw new InventoryActionError(409, "Only available items can be rented.");
+    }
+
+    const bookingItemIds = bookingItemRows.map((row) => str(row.item_id));
+    const transactionItemIds = transactionItemRows.map((row) => str(row.item_id));
+    const itemsById = new Map(itemRows.map((row) => [str(row.id), toItem(row)]));
+    const items = fields.itemIds.map((id) => itemsById.get(id)).filter((item): item is KebayaItem => Boolean(item));
+    if (items.length !== fields.itemIds.length || items.some((item) => item.status !== "rented")) {
+      throw new InventoryActionError(409, "Only available items can be rented.");
+    }
+
+    return {
+      tenant: toTenant(tenantRow),
+      customer: toCustomer(customerRow, []),
+      booking: toBooking(bookingRow, bookingItemIds),
+      transaction: toTransaction(transactionRow, transactionItemIds),
+      items,
+      cashierName: session.name,
+    };
+  } catch (error) {
+    throw posActionError(error);
+  }
+}
+
+export async function handlePosOpenRequest(
+  request: Request,
+  session: PosActionSession | null,
+  db: D1Database,
+): Promise<Response> {
+  if (!session) return jsonError("Unauthorized", 401);
+  if (!canOpenPos(session)) return jsonError("Only owner and cashier users can open rentals.", 403);
+  try {
+    const payload = await request.json();
+    const receipt = await openPosTransaction(db, session, payload);
+    return Response.json({ receipt });
+  } catch (error) {
+    const mapped = posActionError(error);
     return jsonError(mapped.message, mapped.status);
   }
 }

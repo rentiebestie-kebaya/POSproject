@@ -1,4 +1,5 @@
 import type { Auth } from "./auth";
+import { normalizePhone } from "./phone.js";
 import type { Tenant, TenantDataset } from "@/data/mock";
 
 /**
@@ -42,10 +43,6 @@ export interface SeedResult {
     bookingRequests: number;
     transactions: number;
   };
-}
-
-function normalizePhone(phone: string): string {
-  return phone.replace(/\D/g, "");
 }
 
 /**

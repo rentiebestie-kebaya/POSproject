@@ -119,6 +119,7 @@ function ConfirmModal({
   confirmLabel,
   children,
   confirmDisabled = false,
+  busy = false,
   onCancel,
   onConfirm,
 }: {
@@ -126,8 +127,9 @@ function ConfirmModal({
   confirmLabel: string;
   children: React.ReactNode;
   confirmDisabled?: boolean;
+  busy?: boolean;
   onCancel: () => void;
-  onConfirm: () => void;
+  onConfirm: () => void | Promise<void>;
 }) {
   return (
     <div className="fixed inset-0 z-40 flex items-center justify-center bg-ink/40 p-4">
@@ -138,14 +140,15 @@ function ConfirmModal({
           <button
             type="button"
             onClick={onCancel}
-            className="rounded-full border border-black/10 px-4 py-2 text-sm font-medium hover:bg-black/5"
+            disabled={busy}
+            className="rounded-full border border-black/10 px-4 py-2 text-sm font-medium hover:bg-black/5 disabled:cursor-not-allowed disabled:opacity-50"
           >
             Cancel
           </button>
           <button
             type="button"
             onClick={onConfirm}
-            disabled={confirmDisabled}
+            disabled={confirmDisabled || busy}
             className="rounded-full bg-brand-900 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-800 disabled:cursor-not-allowed disabled:bg-brand-200"
           >
             {confirmLabel}
@@ -589,6 +592,7 @@ export default function POS() {
   const [historyType, setHistoryType] = useState<"all" | TransactionType>("all");
 
   const [pending, setPending] = useState<Mode | null>(null);
+  const [savingMode, setSavingMode] = useState<"open" | null>(null);
   const [paymentConfirmed, setPaymentConfirmed] = useState(false);
   const [receipt, setReceipt] = useState<TransactionReceipt | null>(null);
   const [success, setSuccess] = useState("");
@@ -721,10 +725,13 @@ export default function POS() {
     setSelectedIds((prev) => (prev.includes(itemId) ? prev.filter((id) => id !== itemId) : [...prev, itemId]));
   };
 
-  const handleConfirm = () => {
+  const handleConfirm = async () => {
+    if (!pending || savingMode) return;
+    const action = pending;
+    if (action === "open") setSavingMode("open");
     try {
-      if (pending === "open") {
-        const nextReceipt = openTransaction({
+      if (action === "open") {
+        const nextReceipt = await openTransaction({
           itemIds: selectedIds,
           customerName,
           whatsapp,
@@ -752,7 +759,7 @@ export default function POS() {
         setSuccess("Transaction created. Selected item status is now rented.");
       }
 
-      if (pending === "close" && returnBooking) {
+      if (action === "close" && returnBooking) {
         const nextReceipt = closeTransaction({
           bookingId: returnBooking.id,
           returnDate,
@@ -768,7 +775,7 @@ export default function POS() {
         setSuccess("Return processed. Item moved to cleaning / maintenance.");
       }
 
-      if (pending === "clean" && currentMaintenanceItemId) {
+      if (action === "clean" && currentMaintenanceItemId) {
         const item = completeCleaning({ itemId: currentMaintenanceItemId, notes: cleaningNotes });
         setMaintenanceItemId("");
         setCleaningNotes("");
@@ -777,6 +784,7 @@ export default function POS() {
     } catch (err) {
       setError(err instanceof Error ? err.message : "Transaction failed.");
     } finally {
+      setSavingMode(null);
       setPending(null);
     }
   };
@@ -1007,7 +1015,7 @@ export default function POS() {
               {!validRange && <p className="mt-3 text-xs font-medium text-critical">Tanggal pengembalian harus setelah tanggal sewa.</p>}
               <button
                 type="button"
-                disabled={!openValid}
+                disabled={!openValid || savingMode === "open"}
                 onClick={() => {
                   resetMessages();
                   setPaymentConfirmed(false);
@@ -1015,7 +1023,7 @@ export default function POS() {
                 }}
                 className="mt-4 w-full rounded-full bg-brand-900 py-2.5 text-sm font-semibold text-white hover:bg-brand-800 disabled:cursor-not-allowed disabled:bg-brand-200"
               >
-                Create Transaction
+                {savingMode === "open" ? "Creating..." : "Create Transaction"}
               </button>
           </Card>
         </div>
@@ -1406,9 +1414,12 @@ export default function POS() {
       {pending === "open" && (
         <ConfirmModal
           title="Confirm payment first"
-          confirmLabel="Create Transaction"
+          confirmLabel={savingMode === "open" ? "Creating..." : "Create Transaction"}
           confirmDisabled={!paymentConfirmed}
-          onCancel={() => setPending(null)}
+          busy={savingMode === "open"}
+          onCancel={() => {
+            if (!savingMode) setPending(null);
+          }}
           onConfirm={handleConfirm}
         >
           <p>This will mark {selectedItems.length} selected item(s) as rented and generate an open transaction receipt.</p>
@@ -1423,14 +1434,24 @@ export default function POS() {
       )}
 
       {pending === "close" && returnBooking && (
-        <ConfirmModal title="Process return?" confirmLabel="Proses Pengembalian" onCancel={() => setPending(null)} onConfirm={handleConfirm}>
+        <ConfirmModal
+          title="Process return?"
+          confirmLabel="Proses Pengembalian"
+          onCancel={() => setPending(null)}
+          onConfirm={handleConfirm}
+        >
           <p>This will close booking {returnBooking.id} and move all items in this rental to cleaning / maintenance.</p>
           <p className="mt-2 font-semibold text-ink">Jaminan returned: {formatIDR(depositReturned)}</p>
         </ConfirmModal>
       )}
 
       {pending === "clean" && currentMaintenanceItem && (
-        <ConfirmModal title="Mark item available?" confirmLabel="Tandai Selesai Cuci" onCancel={() => setPending(null)} onConfirm={handleConfirm}>
+        <ConfirmModal
+          title="Mark item available?"
+          confirmLabel="Tandai Selesai Cuci"
+          onCancel={() => setPending(null)}
+          onConfirm={handleConfirm}
+        >
           <p>{currentMaintenanceItem.name} will become available for the next rental.</p>
         </ConfirmModal>
       )}
