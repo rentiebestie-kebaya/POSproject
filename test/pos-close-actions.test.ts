@@ -121,6 +121,7 @@ describe("POS close transaction action", () => {
     expect(receipt.items.map((item) => item.status)).toEqual(["available", "available"]);
 
     const boot = await getTenantBootstrap(env.DB, DEMO_TENANT_ID);
+    expect(receipt.financeSummary).toEqual(boot.financeSummary);
     expect(boot.dataset.bookings.find((row) => row.id === openReceipt.booking.id)?.status).toBe("returned");
     expect(boot.dataset.transactions.find((row) => row.id === receipt.transaction.id)?.itemIds).toEqual(
       openReceipt.booking.itemIds,

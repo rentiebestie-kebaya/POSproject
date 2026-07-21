@@ -104,6 +104,7 @@ describe("POS open transaction action", () => {
     });
 
     const boot = await getTenantBootstrap(env.DB, DEMO_TENANT_ID);
+    expect(receipt.financeSummary).toEqual(boot.financeSummary);
     expect(boot.dataset.bookings.find((row) => row.id === receipt.booking.id)?.itemIds).toEqual(itemIds);
     expect(boot.dataset.transactions.find((row) => row.id === receipt.transaction.id)?.itemIds).toEqual(itemIds);
     for (const id of itemIds) {

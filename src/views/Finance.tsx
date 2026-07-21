@@ -4,6 +4,7 @@ import { AlertTriangle, Download } from "lucide-react";
 import { Card, PageHeader, Th, Td } from "../components/Ui";
 import { useTenant } from "../data/store";
 import { formatDate, formatIDR, type Transaction } from "../data/mock";
+import { buildFinanceTransactionLine } from "../data/finance";
 
 const PAY_STATUS_STYLE: Record<string, string> = {
   paid: "bg-success/10 text-success ring-success/30",
@@ -20,23 +21,14 @@ function exportCsv(transactions: Transaction[], tenantSlug: string) {
   const blob = new Blob([[header, ...rows].join("\n")], { type: "text/csv" });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
-  a.download = `rentie-${tenantSlug}-transactions-jul-2026.csv`;
+  a.download = `rentie-${tenantSlug}-transactions.csv`;
   a.click();
   URL.revokeObjectURL(a.href);
 }
 
 export default function Finance() {
-  const { tenant, bookings, transactions, planRules, customerById } = useTenant();
-  const collected = transactions
-    .filter((t) => t.paymentStatus === "paid")
-    .reduce((a, t) => a + t.total, 0);
-  const outstanding = transactions
-    .filter((t) => t.paymentStatus === "partial" || t.paymentStatus === "pending")
-    .reduce((a, t) => a + t.total, 0);
-  const depositsHeld = transactions
-    .filter((t) => t.paymentStatus !== "refunded")
-    .reduce((a, t) => a + t.deposit, 0);
-  const fees = transactions.reduce((a, t) => a + t.lateFee + t.damageFee, 0);
+  const { tenant, bookings, transactions, financeSummary, planRules, customerById } = useTenant();
+  const sortedTransactions = [...transactions].sort((a, b) => b.date.localeCompare(a.date) || b.id.localeCompare(a.id));
 
   return (
     <>
@@ -44,8 +36,8 @@ export default function Finance() {
         title="Finance"
         subtitle={
           planRules.finance === "full"
-            ? "Payments, deposits, and fees for this store — export anytime for your accountant."
-            : "Basic revenue summary for this store."
+            ? "Payments, deposits, and fees recorded through POS for this store."
+            : "Basic revenue summary from real POS transactions for this store."
         }
         actions={
           <button
@@ -66,10 +58,10 @@ export default function Finance() {
 
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         {[
-          ["Collected (July)", collected],
-          ["Outstanding", outstanding],
-          ["Deposits held", depositsHeld],
-          ["Late + damage fees", fees],
+          ["Today's takings", financeSummary.todayTakings],
+          ["Basic revenue", financeSummary.grossRevenue],
+          ["Deposits held", financeSummary.depositsHeld],
+          ["Late + damage fees", financeSummary.feeRevenue],
         ].map(([label, v]) => (
           <Card key={label as string} className="px-5 py-4">
             <div className="text-[13px] text-ink-2">{label}</div>
@@ -78,6 +70,30 @@ export default function Finance() {
             </div>
           </Card>
         ))}
+      </div>
+
+      <div className="mt-4 grid gap-4 lg:grid-cols-3">
+        <Card className="px-5 py-4">
+          <div className="text-[13px] text-ink-2">Checkout takings</div>
+          <div className="mt-1 text-lg font-semibold tabular-nums">{formatIDR(financeSummary.checkoutTakings)}</div>
+          <p className="mt-1 text-xs leading-5 text-ink-3">
+            Rental payments plus deposits received at checkout.
+          </p>
+        </Card>
+        <Card className="px-5 py-4">
+          <div className="text-[13px] text-ink-2">Outstanding</div>
+          <div className="mt-1 text-lg font-semibold tabular-nums">{formatIDR(financeSummary.outstanding)}</div>
+          <p className="mt-1 text-xs leading-5 text-ink-3">
+            Partial or pending transaction totals still to reconcile.
+          </p>
+        </Card>
+        <Card className="px-5 py-4">
+          <div className="text-[13px] text-ink-2">Transactions</div>
+          <div className="mt-1 text-lg font-semibold tabular-nums">{financeSummary.transactionCount}</div>
+          <p className="mt-1 text-xs leading-5 text-ink-3">
+            {financeSummary.todayTransactionCount} recorded today.
+          </p>
+        </Card>
       </div>
 
       {planRules.finance !== "full" && (
@@ -104,29 +120,38 @@ export default function Finance() {
               <Th>Transaction</Th>
               <Th>Date</Th>
               <Th>Customer</Th>
+              <Th>Type</Th>
               <Th className="text-right">Deposit</Th>
+              <Th className="text-right">Deposit returned</Th>
               <Th className="text-right">Late fee</Th>
               <Th className="text-right">Damage fee</Th>
+              <Th className="text-right">Revenue</Th>
               <Th className="text-right">Total</Th>
               <Th>Method</Th>
               <Th>Status</Th>
             </tr>
           </thead>
           <tbody className="divide-y divide-hairline">
-            {transactions.map((t) => {
-              const booking = bookings.find((b) => b.id === t.bookingId)!;
+            {sortedTransactions.map((t) => {
+              const booking = bookings.find((b) => b.id === t.bookingId);
+              const line = buildFinanceTransactionLine(t);
               return (
                 <tr key={t.id} className="hover:bg-brand-50/40">
                   <Td className="font-medium">{t.id}</Td>
                   <Td className="whitespace-nowrap text-ink-2">{formatDate(t.date)}</Td>
-                  <Td>{customerById(booking.customerId).name}</Td>
+                  <Td>{t.customerName ?? (booking ? customerById(booking.customerId).name : "Unknown")}</Td>
+                  <Td className="capitalize text-ink-2">{t.transactionType ?? "record"}</Td>
                   <Td className="text-right tabular-nums text-ink-2">{formatIDR(t.deposit)}</Td>
+                  <Td className="text-right tabular-nums text-ink-2">
+                    {t.depositReturned ? formatIDR(t.depositReturned) : "—"}
+                  </Td>
                   <Td className={`text-right tabular-nums ${t.lateFee ? "font-medium text-critical" : "text-ink-3"}`}>
                     {t.lateFee ? formatIDR(t.lateFee) : "—"}
                   </Td>
                   <Td className={`text-right tabular-nums ${t.damageFee ? "font-medium text-critical" : "text-ink-3"}`}>
                     {t.damageFee ? formatIDR(t.damageFee) : "—"}
                   </Td>
+                  <Td className="text-right font-medium tabular-nums">{formatIDR(line.recognizedRevenue)}</Td>
                   <Td className="text-right font-medium tabular-nums">{formatIDR(t.total)}</Td>
                   <Td className="text-ink-2">{t.method}</Td>
                   <Td>

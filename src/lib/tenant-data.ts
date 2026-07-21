@@ -1,5 +1,6 @@
 import { isDomainRole, type Auth } from "./auth";
 import { normalizePhone } from "./phone.js";
+import { buildFinanceSummary, type FinanceSummary, type FinanceSummaryOptions } from "../data/finance";
 import type {
   Booking,
   BookingRequest,
@@ -30,6 +31,7 @@ export interface TenantBootstrap {
   tenant: Tenant | null;
   team: User[];
   dataset: TenantDataset;
+  financeSummary: FinanceSummary;
 }
 
 export interface TenantActionReceipt {
@@ -39,7 +41,10 @@ export interface TenantActionReceipt {
   customer: Customer;
   items: KebayaItem[];
   cashierName: string;
+  financeSummary: FinanceSummary;
 }
+
+export type { FinanceSummary };
 
 export class InventoryActionError extends Error {
   constructor(
@@ -501,6 +506,11 @@ function groupItemIds(rows: Row[], parentKey: string): Map<string, string[]> {
   return map;
 }
 
+function rowsToTransactions(transactionRows: Row[], transactionItemRows: Row[]): Transaction[] {
+  const transactionItemIds = groupItemIds(transactionItemRows, "transaction_id");
+  return transactionRows.map((r) => toTransaction(r, transactionItemIds.get(str(r.id)) ?? []));
+}
+
 /**
  * Returns the full dataset for one tenant, scoped server-side. All queries are
  * filtered by `tenantId`, so cross-tenant reads are impossible by construction.
@@ -562,10 +572,7 @@ export async function getTenantBootstrap(db: D1Database, tenantId: string): Prom
 
   const bookingRequests = bookingRequestsRes.results.map(toBookingRequest);
 
-  const transactionItemIds = groupItemIds(transactionItemsRes.results, "transaction_id");
-  const transactions = transactionsRes.results.map((r) =>
-    toTransaction(r, transactionItemIds.get(str(r.id)) ?? []),
-  );
+  const transactions = rowsToTransactions(transactionsRes.results, transactionItemsRes.results);
 
   const monthlyRevenue = monthlyRevenueRes.results.map((r) => ({
     month: str(r.month),
@@ -581,7 +588,20 @@ export async function getTenantBootstrap(db: D1Database, tenantId: string): Prom
     monthlyRevenue,
   };
 
-  return { tenant, team, dataset };
+  return { tenant, team, dataset, financeSummary: buildFinanceSummary(transactions) };
+}
+
+export async function getTenantFinanceSummary(
+  db: D1Database,
+  tenantId: string,
+  options: FinanceSummaryOptions = {},
+): Promise<FinanceSummary> {
+  const [transactionsRes, transactionItemsRes] = await db.batch<Row>([
+    db.prepare(`SELECT * FROM transactions WHERE tenant_id = ? ORDER BY date DESC, created_at DESC`).bind(tenantId),
+    db.prepare(`SELECT transaction_id, item_id FROM transaction_items WHERE tenant_id = ?`).bind(tenantId),
+  ]);
+  const transactions = rowsToTransactions(transactionsRes.results, transactionItemsRes.results);
+  return buildFinanceSummary(transactions, options);
 }
 
 export async function addInventoryItem(
@@ -917,6 +937,7 @@ export async function openPosTransaction(
       transaction: toTransaction(transactionRow, transactionItemIds),
       items,
       cashierName: session.name,
+      financeSummary: await getTenantFinanceSummary(db, session.tenantId),
     };
   } catch (error) {
     throw posActionError(error);
@@ -1094,6 +1115,7 @@ export async function closePosTransaction(
       transaction: toTransaction(transactionRow, transactionItemIds),
       items,
       cashierName: session.name,
+      financeSummary: await getTenantFinanceSummary(db, session.tenantId),
     };
   } catch (error) {
     throw posCloseActionError(error);

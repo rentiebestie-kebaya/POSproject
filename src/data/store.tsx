@@ -29,6 +29,7 @@ import {
   type User,
 } from "./mock";
 import { rulesForTenant } from "./plans";
+import { buildFinanceSummary, type FinanceSummary } from "./finance";
 import { authClient } from "@/lib/auth-client";
 import { normalizePhone } from "@/lib/phone";
 
@@ -54,6 +55,7 @@ interface BootstrapResponse {
   tenant: Tenant | null;
   team: User[];
   dataset: TenantDataset;
+  financeSummary?: FinanceSummary;
 }
 
 interface InventoryActionResponse {
@@ -157,6 +159,7 @@ export interface TransactionReceipt {
   customer: Customer;
   items: KebayaItem[];
   cashierName: string;
+  financeSummary?: FinanceSummary;
 }
 
 export interface AddUserInput {
@@ -228,6 +231,7 @@ interface TenantContextValue {
   bookings: Booking[];
   transactions: TenantDataset["transactions"];
   monthlyRevenue: TenantDataset["monthlyRevenue"];
+  financeSummary: FinanceSummary;
   planRules: ReturnType<typeof rulesForTenant>;
 
   /** Adds to the current tenant's inventory — tenantId/id/dateAdded are stamped server-side. */
@@ -409,6 +413,7 @@ export function TenantProvider({ children }: { children: ReactNode }) {
   // dataset is loaded into `data` below, so views keep reading it synchronously.
   const [realTenant, setRealTenant] = useState<Tenant | null>(null);
   const [realTeam, setRealTeam] = useState<User[]>([]);
+  const [serverFinanceSummaryByTenant, setServerFinanceSummaryByTenant] = useState<Record<string, FinanceSummary>>({});
   const [devAuthed, setDevAuthed] = useState(false);
   const [sessionReady, setSessionReady] = useState(false);
   const [dataReady, setDataReady] = useState(false);
@@ -427,6 +432,7 @@ export function TenantProvider({ children }: { children: ReactNode }) {
         setRealUser(null);
         setRealTenant(null);
         setRealTeam([]);
+        setServerFinanceSummaryByTenant({});
         return;
       }
       setRealUser(me.user);
@@ -437,17 +443,23 @@ export function TenantProvider({ children }: { children: ReactNode }) {
         const tid = boot.tenant?.id ?? me.user.tenantId;
         setRealTenant(boot.tenant);
         setRealTeam(boot.team);
+        setServerFinanceSummaryByTenant((prev) => ({
+          ...prev,
+          [tid]: boot.financeSummary ?? buildFinanceSummary(boot.dataset.transactions),
+        }));
         // Load the tenant's real dataset into the store cache, exactly where
         // seedData used to live — views keep reading synchronously.
         setData((prev) => ({ ...prev, [tid]: boot.dataset }));
       } else {
         setRealTenant(null);
         setRealTeam([]);
+        setServerFinanceSummaryByTenant({});
       }
     } catch {
       setRealUser(null);
       setRealTenant(null);
       setRealTeam([]);
+      setServerFinanceSummaryByTenant({});
     }
   }, []);
 
@@ -548,6 +560,7 @@ export function TenantProvider({ children }: { children: ReactNode }) {
     setRealUser(null);
     setRealTenant(null);
     setRealTeam([]);
+    setServerFinanceSummaryByTenant({});
     // End the real cookie session too; ignore transport errors on the way out.
     void authClient.signOut().catch(() => {});
   }, []);
@@ -787,6 +800,9 @@ export function TenantProvider({ children }: { children: ReactNode }) {
       }
       if (realUser) {
         const receipt = await postPosOpenAction(input);
+        if (receipt.financeSummary) {
+          setServerFinanceSummaryByTenant((prev) => ({ ...prev, [receipt.tenant.id]: receipt.financeSummary! }));
+        }
         setData((prev) => {
           const current = prev[receipt.tenant.id] ?? emptyDataset();
           const receiptItems = new Map(receipt.items.map((item) => [item.id, item]));
@@ -1209,6 +1225,9 @@ export function TenantProvider({ children }: { children: ReactNode }) {
       const ds = data[tenantId];
       if (realUser) {
         const receipt = await postPosCloseAction(input);
+        if (receipt.financeSummary) {
+          setServerFinanceSummaryByTenant((prev) => ({ ...prev, [receipt.tenant.id]: receipt.financeSummary! }));
+        }
         setData((prev) => {
           const current = prev[receipt.tenant.id] ?? emptyDataset();
           const receiptItems = new Map(receipt.items.map((item) => [item.id, item]));
@@ -1323,6 +1342,10 @@ export function TenantProvider({ children }: { children: ReactNode }) {
     const user = currentUser ?? ownerOf(userList, tenantId);
     const ds = data[tenantId] ?? emptyDataset();
     const planRules = rulesForTenant(tenant);
+    const financeSummary =
+      usingReal && serverFinanceSummaryByTenant[tenantId]
+        ? serverFinanceSummaryByTenant[tenantId]
+        : buildFinanceSummary(ds.transactions);
     const baseTeam = usingReal ? realTeam : userList.filter((u) => u.tenantId === tenantId);
     // Ensure the signed-in user appears in their own team even before staff
     // records exist.
@@ -1358,6 +1381,7 @@ export function TenantProvider({ children }: { children: ReactNode }) {
         devLogout,
       },
       ...ds,
+      financeSummary,
       planRules,
       addItem,
       editItem,
@@ -1381,6 +1405,7 @@ export function TenantProvider({ children }: { children: ReactNode }) {
     realUser,
     realTenant,
     realTeam,
+    serverFinanceSummaryByTenant,
     userList,
     data,
     devAuthed,
