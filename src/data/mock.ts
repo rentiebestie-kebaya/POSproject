@@ -45,6 +45,12 @@ export interface User {
   tenantId: string;
   name: string;
   role: Role;
+  /**
+   * False when the owner has revoked this staff member's access (better-auth
+   * `banned`). Deactivated rather than deleted, so past transactions keep
+   * attributing to their name. Undefined means active.
+   */
+  active?: boolean;
 }
 
 export const ROLE_LABEL: Record<Role, string> = {

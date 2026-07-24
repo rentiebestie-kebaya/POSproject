@@ -21,14 +21,16 @@ export const ROLE_ROUTES: Record<Role, readonly string[]> = {
     "/app/inventory",
     "/app/pos",
     "/app/customers",
+    "/app/fitting",
     "/app/finance",
     "/app/settings",
+    "/app/account",
   ],
   // Counter staff: rings up sales, sees who they serve and what's in stock
   // (read-only), works the booking calendar. No money view, no shop settings.
-  cashier: ["/app", "/app/bookings", "/app/inventory", "/app/pos", "/app/customers"],
+  cashier: ["/app", "/app/bookings", "/app/inventory", "/app/pos", "/app/customers", "/app/account"],
   // Fitting staff: the schedule and the pieces going out, nothing financial.
-  fitting: ["/app", "/app/bookings"],
+  fitting: ["/app", "/app/bookings", "/app/fitting", "/app/account"],
 };
 
 /** True when `role` may view `path` (exact route, not prefix). */

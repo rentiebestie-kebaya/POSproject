@@ -1,19 +1,11 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { AlertTriangle, CalendarDays, Check, Clock, MessageCircle, Search, ShieldCheck, Shirt } from "lucide-react";
 import { useTenant } from "../data/store";
-import {
-  TODAY,
-  formatDate,
-  formatIDR,
-  rangesOverlap,
-  type Booking,
-  type KebayaItem,
-  type Tenant,
-} from "../data/mock";
-import { rulesForTenant } from "../data/plans";
+import { TODAY, formatDate, formatIDR, rangesOverlap } from "../data/mock";
+import type { PublicStore, PublicStoreBusy, PublicStoreItem } from "@/lib/tenant-data";
 
 const inputCls = "w-full rounded-xl border border-black/10 bg-white px-3 py-2.5 text-sm outline-none focus:border-brand-400";
 const labelCls = "mb-1.5 block text-xs font-semibold text-ink-2";
@@ -28,26 +20,21 @@ function addDays(value: string, days: number): string {
   return `${yyyy}-${mm}-${dd}`;
 }
 
-function resolveTenant(slug: string, tenants: Tenant[]): Tenant | undefined {
-  const normalized = slug.toLowerCase();
-  return tenants.find((tenant) => {
-    const subdomain = tenant.subdomain.split(".")[0].toLowerCase();
-    return tenant.id === normalized || subdomain === normalized || tenant.subdomain.toLowerCase() === normalized;
-  });
-}
-
-function activeConflicts(bookings: Booking[], itemId: string, start: string, end: string): Booking[] {
+/**
+ * Dates already taken for this piece. The public endpoint returns anonymous
+ * busy ranges only — which item, which dates, never who or for how much.
+ */
+function activeConflicts(
+  busy: PublicStoreBusy[],
+  itemId: string,
+  start: string,
+  end: string,
+): PublicStoreBusy[] {
   if (!start || !end || end < start) return [];
-  return bookings.filter(
-    (booking) =>
-      booking.status !== "cancelled" &&
-      booking.status !== "returned" &&
-      booking.itemIds.includes(itemId) &&
-      rangesOverlap(booking.startDate, booking.endDate, start, end),
-  );
+  return busy.filter((row) => row.itemId === itemId && rangesOverlap(row.startDate, row.endDate, start, end));
 }
 
-function ItemPhoto({ item, variant = "card" }: { item: KebayaItem; variant?: "card" | "selected" }) {
+function ItemPhoto({ item, variant = "card" }: { item: PublicStoreItem; variant?: "card" | "selected" }) {
   const cls = variant === "selected" ? "h-20 w-16 rounded-xl" : "h-24 w-20 rounded-xl";
   if (item.photos[0]) {
     return <img src={item.photos[0]} alt="" className={`${cls} shrink-0 object-cover`} />;
@@ -86,10 +73,33 @@ function StepHeader({ number, title, caption }: { number: string; title: string;
 }
 
 export default function PublicBooking({ tenantSlug }: { tenantSlug: string }) {
-  const { platform, createPublicBookingRequest } = useTenant();
-  const tenant = resolveTenant(tenantSlug, platform.tenants);
-  const dataset = tenant ? platform.datasets[tenant.id] : undefined;
-  const planRules = tenant ? rulesForTenant(tenant) : undefined;
+  const { createPublicBookingRequest } = useTenant();
+  // The public page is server-backed: it reads the shop's PUBLIC projection by
+  // slug. A shop that is unknown, suspended, or not on Pro simply 404s, so the
+  // page never has to reason about plans or status itself.
+  const [store, setStore] = useState<PublicStore | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    fetch(`/api/public/store/${encodeURIComponent(tenantSlug)}`)
+      .then((res) => (res.ok ? (res.json() as Promise<PublicStore>) : null))
+      .then((data) => {
+        if (!cancelled) setStore(data);
+      })
+      .catch(() => {
+        if (!cancelled) setStore(null);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [tenantSlug]);
+
+  const tenant = store?.tenant;
 
   const [query, setQuery] = useState("");
   const [selectedItemId, setSelectedItemId] = useState("");
@@ -102,9 +112,10 @@ export default function PublicBooking({ tenantSlug }: { tenantSlug: string }) {
   const [notes, setNotes] = useState("");
   const [success, setSuccess] = useState("");
   const [error, setError] = useState("");
+  const [sending, setSending] = useState(false);
 
-  const items = dataset?.inventory ?? [];
-  const bookings = dataset?.bookings ?? [];
+  const items = store?.items ?? [];
+  const busy = store?.busy ?? [];
   const filteredItems = useMemo(() => {
     const q = query.trim().toLowerCase();
     return items.filter((item) => {
@@ -115,7 +126,7 @@ export default function PublicBooking({ tenantSlug }: { tenantSlug: string }) {
     });
   }, [items, query]);
   const selectedItem = items.find((item) => item.id === selectedItemId) ?? filteredItems[0];
-  const selectedConflicts = selectedItem ? activeConflicts(bookings, selectedItem.id, startDate, endDate) : [];
+  const selectedConflicts = selectedItem ? activeConflicts(busy, selectedItem.id, startDate, endDate) : [];
   const selectedAvailable = selectedConflicts.length === 0;
   const validRange = Boolean(startDate && endDate && endDate >= startDate && startDate > TODAY);
   const hasRequiredDetails = customerName.trim().length > 1 && whatsapp.trim().length > 5;
@@ -132,12 +143,14 @@ export default function PublicBooking({ tenantSlug }: { tenantSlug: string }) {
     document.getElementById("booking-details")?.scrollIntoView({ behavior: "smooth", block: "start" });
   };
 
-  const submit = () => {
+  const submit = async () => {
+    if (sending) return;
     setError("");
     setSuccess("");
     if (!tenant || !selectedItem) return;
+    setSending(true);
     try {
-      const request = createPublicBookingRequest({
+      const request = await createPublicBookingRequest({
         tenantId: tenant.id,
         itemId: selectedItem.id,
         customerName,
@@ -154,10 +167,24 @@ export default function PublicBooking({ tenantSlug }: { tenantSlug: string }) {
       setSuccess(`Request ${request.id} terkirim. ${tenant.name} akan cek dan confirm manual lewat WhatsApp.`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not send booking request.");
+    } finally {
+      setSending(false);
     }
   };
 
-  if (!tenant || !dataset) {
+  if (loading) {
+    return (
+      <main className="min-h-screen bg-page px-5 py-10">
+        <div className="mx-auto max-w-xl rounded-2xl border border-hairline bg-white p-6 text-sm text-ink-2">
+          Memuat halaman booking…
+        </div>
+      </main>
+    );
+  }
+
+  // One page for every "you can't book here" case — unknown shop, suspended, or
+  // not on Pro. The server decides; the page never reveals which it was.
+  if (!tenant) {
     return (
       <main className="min-h-screen bg-page px-5 py-10">
         <div className="mx-auto max-w-xl rounded-2xl border border-hairline bg-white p-6">
@@ -169,30 +196,6 @@ export default function PublicBooking({ tenantSlug }: { tenantSlug: string }) {
           <Link href="/" className="mt-5 inline-flex rounded-full bg-brand-900 px-4 py-2 text-sm font-semibold text-white">
             Back to RENTIE
           </Link>
-        </div>
-      </main>
-    );
-  }
-
-  if (!planRules?.publicBookingEnabled || tenant.status === "suspended") {
-    return (
-      <main className="min-h-screen bg-page px-5 py-10">
-        <div className="mx-auto max-w-xl rounded-2xl border border-hairline bg-white p-6">
-          <div className="flex h-10 w-10 items-center justify-center rounded-full bg-warning/20 text-gold-600">
-            <AlertTriangle size={18} />
-          </div>
-          <h1 className="mt-4 text-xl font-semibold">Booking page is not active</h1>
-          <p className="mt-2 text-sm leading-6 text-ink-2">
-            Public booking is available on Pro. Contact {tenant.name} through WhatsApp for manual rental help.
-          </p>
-          <a
-            href={`https://wa.me/${tenant.whatsapp.replace(/\D/g, "")}`}
-            target="_blank"
-            rel="noreferrer"
-            className="mt-5 inline-flex rounded-full bg-brand-900 px-4 py-2 text-sm font-semibold text-white"
-          >
-            Chat {tenant.name}
-          </a>
         </div>
       </main>
     );
@@ -280,7 +283,7 @@ export default function PublicBooking({ tenantSlug }: { tenantSlug: string }) {
 
               <div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
                 {filteredItems.map((item) => {
-                  const conflicts = activeConflicts(bookings, item.id, startDate, endDate);
+                  const conflicts = activeConflicts(busy, item.id, startDate, endDate);
                   const available = conflicts.length === 0;
                   const selected = selectedItem?.id === item.id;
                   return (

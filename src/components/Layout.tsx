@@ -10,10 +10,12 @@ import {
   ShoppingBag,
   Users,
   Wallet,
+  Ruler,
   Settings,
   Bell,
   ChevronDown,
   BadgeCheck,
+  UserCircle,
   LogOut,
   PanelLeftClose,
   PanelLeftOpen,
@@ -29,6 +31,7 @@ const NAV = [
   { to: "/app/inventory", label: "Inventory", icon: Shirt },
   { to: "/app/pos", label: "Rental POS", icon: ShoppingBag },
   { to: "/app/customers", label: "Customers", icon: Users },
+  { to: "/app/fitting", label: "Fitting", icon: Ruler },
   { to: "/app/finance", label: "Finance", icon: Wallet },
   { to: "/app/settings", label: "Settings", icon: Settings },
 ];
@@ -210,6 +213,16 @@ export default function Layout({ children }: { children: ReactNode }) {
                       </div>
                     </div>
                   </div>
+                  {canAccessRoute(user.role, "/app/account") && (
+                    <Link
+                      href="/app/account"
+                      role="menuitem"
+                      onClick={() => setMenuOpen(false)}
+                      className="flex w-full items-center gap-2.5 border-b border-black/5 px-4 py-2.5 text-left text-sm font-medium text-ink-2 hover:bg-brand-50"
+                    >
+                      <UserCircle size={16} /> My account
+                    </Link>
+                  )}
                   <button
                     type="button"
                     role="menuitem"

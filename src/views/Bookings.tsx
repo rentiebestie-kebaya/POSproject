@@ -88,6 +88,7 @@ function RequestInbox() {
   } = useTenant();
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const [deciding, setDeciding] = useState<string | null>(null);
   const sorted = [...bookingRequests].sort((a, b) => {
     if (a.status === b.status) return a.expiresAt.localeCompare(b.expiresAt);
     return a.status === "pending" ? -1 : 1;
@@ -98,23 +99,31 @@ function RequestInbox() {
     setError("");
   };
 
-  const approve = (requestId: string) => {
+  const approve = async (requestId: string) => {
+    if (deciding) return;
     reset();
+    setDeciding(requestId);
     try {
-      const booking = approveBookingRequest({ requestId });
+      const booking = await approveBookingRequest({ requestId });
       setMessage(`Request approved. Booking ${booking.id} is now confirmed.`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not approve request.");
+    } finally {
+      setDeciding(null);
     }
   };
 
-  const reject = (requestId: string) => {
+  const reject = async (requestId: string) => {
+    if (deciding) return;
     reset();
+    setDeciding(requestId);
     try {
-      rejectBookingRequest({ requestId });
+      await rejectBookingRequest({ requestId });
       setMessage("Request rejected.");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not reject request.");
+    } finally {
+      setDeciding(null);
     }
   };
 
@@ -203,7 +212,7 @@ function RequestInbox() {
                     </a>
                     <button
                       type="button"
-                      disabled={!pending || !available}
+                      disabled={!pending || !available || deciding === request.id}
                       onClick={() => approve(request.id)}
                       className="inline-flex items-center justify-center gap-2 rounded-full bg-brand-900 px-3 py-2 text-sm font-semibold text-white hover:bg-brand-800 disabled:cursor-not-allowed disabled:bg-brand-200"
                     >
@@ -211,7 +220,7 @@ function RequestInbox() {
                     </button>
                     <button
                       type="button"
-                      disabled={!pending}
+                      disabled={!pending || deciding === request.id}
                       onClick={() => reject(request.id)}
                       className="inline-flex items-center justify-center gap-2 rounded-full border border-hairline bg-white px-3 py-2 text-sm font-semibold text-ink-2 hover:bg-page disabled:cursor-not-allowed disabled:opacity-50"
                     >

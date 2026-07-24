@@ -71,11 +71,39 @@ interface PosActionSession {
 export interface StaffProvisionSession {
   tenantId: string;
   role?: unknown;
+  /** The acting user — used to stop an owner revoking their own access. */
+  userId?: string;
 }
 
 export interface StaffProvisionReceipt {
   user: User;
   team: User[];
+}
+
+export interface StaffAccessInput {
+  userId: string;
+  active: boolean;
+}
+
+export interface AccountPasswordInput {
+  currentPassword: string;
+  newPassword: string;
+}
+
+export interface MeasurementInput {
+  customerId: string;
+  bust: number;
+  waist: number;
+  hip: number;
+}
+
+export interface MeasurementReceipt {
+  customer: Customer;
+}
+
+export interface StaffPasswordInput {
+  userId: string;
+  password: string;
 }
 
 export interface PosOpenInput {
@@ -141,6 +169,75 @@ export interface ReservationReceipt {
   booking: Booking;
   items: KebayaItem[];
   financeSummary: FinanceSummary;
+}
+
+export interface PublicBookingRequestInput {
+  tenantId: string;
+  itemId: string;
+  customerName: string;
+  whatsapp: string;
+  eventType?: string;
+  eventDate?: string;
+  startDate: string;
+  endDate: string;
+  notes?: string;
+}
+
+interface PublicBookingRequestFields extends PublicBookingRequestInput {
+  normalizedWhatsapp: string;
+}
+
+export interface PublicBookingRequestReceipt {
+  request: BookingRequest;
+}
+
+/**
+ * The PUBLIC projection of a shop — deliberately narrow. A visitor sees the
+ * shop's contact card, the pieces, and which dates are already taken. They
+ * never see customers, transactions, revenue, or an item's `cost`.
+ */
+export interface PublicStoreItem {
+  id: string;
+  name: string;
+  inventoryCode: string;
+  model: string;
+  color: string;
+  sizeLabel: string;
+  rentalPrice: number;
+  photos: string[];
+}
+
+/** An anonymous "already taken" range — no customer, no money. */
+export interface PublicStoreBusy {
+  itemId: string;
+  startDate: string;
+  endDate: string;
+}
+
+export interface PublicStore {
+  tenant: {
+    id: string;
+    name: string;
+    subdomain: string;
+    location: string;
+    whatsapp: string;
+    bookingDepositAmount: number;
+    bookingDepositPolicy: Tenant["bookingDepositPolicy"];
+  };
+  items: PublicStoreItem[];
+  busy: PublicStoreBusy[];
+}
+
+export interface BookingRequestApprovalReceipt {
+  request: BookingRequest;
+  booking: Booking;
+  customer: Customer;
+  items: KebayaItem[];
+  financeSummary: FinanceSummary;
+}
+
+export interface BookingRequestRejectionReceipt {
+  request: BookingRequest;
 }
 
 interface InventoryFields {
@@ -341,6 +438,51 @@ function staffProvisionFields(input: unknown): StaffProvisionFields {
   return { email, password, name, role };
 }
 
+function accountPasswordFields(input: unknown): AccountPasswordInput {
+  const row = record(input);
+  const currentPassword = requiredText(row, "currentPassword", "Current password");
+  const newPassword = requiredText(row, "newPassword", "New password");
+  if (newPassword.length < 8) throw new InventoryActionError(400, "New password must be at least 8 characters.");
+  if (newPassword === currentPassword) {
+    throw new InventoryActionError(400, "New password must be different from the current one.");
+  }
+  return { currentPassword, newPassword };
+}
+
+/** A body measurement in centimetres — sane bounds keep typos out of the record. */
+function measurementValue(row: Row, key: string, label: string): number {
+  const value = Number(row[key] ?? 0);
+  if (!Number.isFinite(value) || value <= 0) throw new InventoryActionError(400, `${label} is required.`);
+  const rounded = Math.round(value);
+  if (rounded < 20 || rounded > 250) throw new InventoryActionError(400, `${label} must be between 20 and 250 cm.`);
+  return rounded;
+}
+
+function measurementFields(input: unknown): MeasurementInput {
+  const row = record(input);
+  return {
+    customerId: requiredText(row, "customerId", "Customer"),
+    bust: measurementValue(row, "bust", "Bust"),
+    waist: measurementValue(row, "waist", "Waist"),
+    hip: measurementValue(row, "hip", "Hip"),
+  };
+}
+
+function staffAccessFields(input: unknown): StaffAccessInput {
+  const row = record(input);
+  if (typeof row.active !== "boolean") {
+    throw new InventoryActionError(400, "Specify whether the account should be active.");
+  }
+  return { userId: requiredText(row, "userId", "Staff member"), active: row.active };
+}
+
+function staffPasswordFields(input: unknown): StaffPasswordInput {
+  const row = record(input);
+  const password = requiredText(row, "password", "New password");
+  if (password.length < 8) throw new InventoryActionError(400, "New password must be at least 8 characters.");
+  return { userId: requiredText(row, "userId", "Staff member"), password };
+}
+
 function evidence(value: unknown): PosOpenInput["evidence"] {
   if (value == null) return undefined;
   const row = record(value);
@@ -424,6 +566,46 @@ function reservationFields(input: unknown): ReservationFields {
   };
 }
 
+/** Bounded free text for the PUBLIC endpoint — untrusted input, so cap lengths. */
+function boundedText(row: Row, key: string, label: string, max: number, required: boolean): string | undefined {
+  const value = str(row[key]).trim();
+  if (!value) {
+    if (required) throw new InventoryActionError(400, `${label} is required.`);
+    return undefined;
+  }
+  if (value.length > max) throw new InventoryActionError(400, `${label} is too long.`);
+  return value;
+}
+
+function publicBookingRequestFields(input: unknown): PublicBookingRequestFields {
+  const row = record(input);
+  const startDate = requiredText(row, "startDate", "Start date");
+  const endDate = requiredText(row, "endDate", "End date");
+  if (endDate < startDate) throw new InventoryActionError(400, "Select a valid rental date range.");
+  if (startDate <= todayIsoDate()) {
+    throw new InventoryActionError(400, "Online booking requests must be for a future date.");
+  }
+  const whatsapp = boundedText(row, "whatsapp", "WhatsApp", 32, true)!;
+  const normalizedWhatsapp = normalizePhone(whatsapp);
+  if (normalizedWhatsapp.length < 6) throw new InventoryActionError(400, "WhatsApp number is required.");
+  return {
+    tenantId: requiredText(row, "tenantId", "Store"),
+    itemId: requiredText(row, "itemId", "Kebaya"),
+    customerName: boundedText(row, "customerName", "Name", 120, true)!,
+    whatsapp,
+    normalizedWhatsapp,
+    eventType: boundedText(row, "eventType", "Event type", 80, false),
+    eventDate: boundedText(row, "eventDate", "Event date", 32, false),
+    startDate,
+    endDate,
+    notes: boundedText(row, "notes", "Notes", 500, false),
+  };
+}
+
+function bookingRequestId(input: unknown): string {
+  return requiredText(record(input), "requestId", "Booking request");
+}
+
 function jsonError(message: string, status: number): Response {
   return Response.json({ error: message }, { status });
 }
@@ -438,6 +620,11 @@ function canWritePosTransaction(session: PosActionSession): boolean {
 
 function canProvisionStaff(session: StaffProvisionSession): boolean {
   return session.role === "owner";
+}
+
+/** Fitting work is the fitting staff's job; the owner can always do it too. */
+function canRecordFitting(session: { role?: unknown }): boolean {
+  return session.role === "owner" || session.role === "fitting";
 }
 
 function actionError(error: unknown): InventoryActionError {
@@ -485,6 +672,36 @@ function reservationActionError(error: unknown): InventoryActionError {
   return new InventoryActionError(500, "Reservation could not be created.");
 }
 
+function bookingRequestActionError(error: unknown, failure: string): InventoryActionError {
+  if (error instanceof InventoryActionError) return error;
+  const message = error instanceof Error ? error.message : String(error);
+  // The approval writes booking_days; a clash there means the piece was
+  // committed elsewhere between the request and the approval.
+  if (message.includes("UNIQUE constraint failed: booking_days")) {
+    return new InventoryActionError(409, "That kebaya is already booked for those dates.");
+  }
+  if (message.includes("FOREIGN KEY constraint failed")) {
+    return new InventoryActionError(409, "Booking request could not be completed.");
+  }
+  return new InventoryActionError(500, failure);
+}
+
+function staffAdminActionError(error: unknown, failure: string): InventoryActionError {
+  if (error instanceof InventoryActionError) return error;
+  const status = typeof error === "object" && error !== null && "statusCode" in error ? Number(error.statusCode) : 0;
+  const message = error instanceof Error ? error.message : String(error);
+  if (status === 401 || message.includes("UNAUTHORIZED")) {
+    return new InventoryActionError(401, "Unauthorized");
+  }
+  if (status === 403 || message.includes("FORBIDDEN")) {
+    return new InventoryActionError(403, "Only owners can manage staff accounts.");
+  }
+  if (status === 404 || message.includes("USER_NOT_FOUND")) {
+    return new InventoryActionError(404, "Staff member not found.");
+  }
+  return new InventoryActionError(500, failure);
+}
+
 function staffProvisionActionError(error: unknown): InventoryActionError {
   if (error instanceof InventoryActionError) return error;
   const status = typeof error === "object" && error !== null && "statusCode" in error ? Number(error.statusCode) : 0;
@@ -527,6 +744,8 @@ function toUser(r: Row): User {
     tenantId: str(r.tenant_id),
     name: str(r.name),
     role: str(r.role) as User["role"],
+    // better-auth stores revocation as `banned`; the domain speaks in `active`.
+    active: !r.banned,
   };
 }
 
@@ -661,7 +880,7 @@ function rowsToTransactions(transactionRows: Row[], transactionItemRows: Row[]):
 
 async function getTenantTeam(db: D1Database, tenantId: string): Promise<User[]> {
   const res = await db
-    .prepare(`SELECT id, tenant_id, name, role FROM "user" WHERE tenant_id = ? ORDER BY name`)
+    .prepare(`SELECT id, tenant_id, name, role, banned FROM "user" WHERE tenant_id = ? ORDER BY name`)
     .bind(tenantId)
     .all<Row>();
   return res.results.map(toUser);
@@ -686,7 +905,7 @@ export async function getTenantBootstrap(db: D1Database, tenantId: string): Prom
     monthlyRevenueRes,
   ] = await db.batch<Row>([
     db.prepare(`SELECT * FROM tenants WHERE id = ?`).bind(tenantId),
-    db.prepare(`SELECT id, tenant_id, name, role FROM "user" WHERE tenant_id = ? ORDER BY name`).bind(tenantId),
+    db.prepare(`SELECT id, tenant_id, name, role, banned FROM "user" WHERE tenant_id = ? ORDER BY name`).bind(tenantId),
     db.prepare(`SELECT * FROM inventory_items WHERE tenant_id = ? ORDER BY date_added DESC`).bind(tenantId),
     db.prepare(`SELECT * FROM customers WHERE tenant_id = ?`).bind(tenantId),
     db
@@ -802,7 +1021,7 @@ export async function provisionStaffAccount(
     });
 
     const userRow = await db
-      .prepare(`SELECT id, tenant_id, name, role FROM "user" WHERE tenant_id = ? AND email = ?`)
+      .prepare(`SELECT id, tenant_id, name, role, banned FROM "user" WHERE tenant_id = ? AND email = ?`)
       .bind(session.tenantId, fields.email)
       .first<Row>();
     if (!userRow) throw new InventoryActionError(500, "Staff account could not be created.");
@@ -828,6 +1047,267 @@ export async function handleStaffProvisionRequest(
     return Response.json(receipt);
   } catch (error) {
     const mapped = staffProvisionActionError(error);
+    return jsonError(mapped.message, mapped.status);
+  }
+}
+
+/**
+ * Change your OWN password. Distinct from the owner's staff reset (which needs
+ * no current password): here the caller must prove they know the existing one,
+ * so a walk-up at an unlocked counter machine cannot silently seize an account.
+ */
+export async function changeOwnPassword(
+  auth: Auth,
+  headers: Headers,
+  input: unknown,
+): Promise<{ ok: true }> {
+  const fields = accountPasswordFields(input);
+  try {
+    await auth.api.changePassword({
+      headers,
+      body: {
+        currentPassword: fields.currentPassword,
+        newPassword: fields.newPassword,
+        revokeOtherSessions: true,
+      },
+    });
+    return { ok: true };
+  } catch (error) {
+    const status =
+      typeof error === "object" && error !== null && "statusCode" in error ? Number(error.statusCode) : 0;
+    const message = error instanceof Error ? error.message : String(error);
+    if (error instanceof InventoryActionError) throw error;
+    if (status === 400 || /invalid|incorrect|password/i.test(message)) {
+      throw new InventoryActionError(400, "Current password is incorrect.");
+    }
+    if (status === 401) throw new InventoryActionError(401, "Unauthorized");
+    throw new InventoryActionError(500, "Password could not be changed.");
+  }
+}
+
+export async function handleAccountPasswordRequest(
+  request: Request,
+  session: { role?: unknown } | null,
+  auth: Auth,
+  headers: Headers,
+): Promise<Response> {
+  if (!session) return jsonError("Unauthorized", 401);
+  try {
+    return Response.json(await changeOwnPassword(auth, headers, await request.json()));
+  } catch (error) {
+    const mapped =
+      error instanceof InventoryActionError
+        ? error
+        : new InventoryActionError(500, "Password could not be changed.");
+    return jsonError(mapped.message, mapped.status);
+  }
+}
+
+/**
+ * Record a fitting measurement against a customer. Tenant-scoped: the customer
+ * is resolved through the session's tenant, so no id from the client can reach
+ * another shop's record.
+ */
+export async function recordMeasurement(
+  db: D1Database,
+  session: { tenantId: string; role?: unknown },
+  input: unknown,
+): Promise<MeasurementReceipt> {
+  const fields = measurementFields(input);
+  if (!canRecordFitting(session)) {
+    throw new InventoryActionError(403, "Only owner and fitting staff can record measurements.");
+  }
+
+  const customerRow = await db
+    .prepare(`SELECT * FROM customers WHERE id = ? AND tenant_id = ?`)
+    .bind(fields.customerId, session.tenantId)
+    .first<Row>();
+  if (!customerRow) throw new InventoryActionError(404, "Customer not found.");
+
+  try {
+    const [, measurementRes] = await db.batch<Row>([
+      db
+        .prepare(
+          `INSERT INTO customer_measurements (customer_id, bust, waist, hip, recorded_at)
+           VALUES (?, ?, ?, ?, ?)`,
+        )
+        .bind(fields.customerId, fields.bust, fields.waist, fields.hip, todayIsoDate()),
+      db
+        .prepare(
+          `SELECT cm.bust, cm.waist, cm.hip, cm.recorded_at
+           FROM customer_measurements cm
+           JOIN customers c ON c.id = cm.customer_id
+           WHERE cm.customer_id = ? AND c.tenant_id = ?
+           ORDER BY cm.recorded_at`,
+        )
+        .bind(fields.customerId, session.tenantId),
+    ]);
+
+    const measurements: Measurement[] = measurementRes.results.map((m) => ({
+      bust: num(m.bust),
+      waist: num(m.waist),
+      hip: num(m.hip),
+      recordedAt: str(m.recorded_at),
+    }));
+    return { customer: toCustomer(customerRow, measurements) };
+  } catch (error) {
+    if (error instanceof InventoryActionError) throw error;
+    throw new InventoryActionError(500, "Measurement could not be saved.");
+  }
+}
+
+export async function handleMeasurementRequest(
+  request: Request,
+  session: { tenantId: string; role?: unknown } | null,
+  db: D1Database,
+): Promise<Response> {
+  if (!session) return jsonError("Unauthorized", 401);
+  if (!canRecordFitting(session)) {
+    return jsonError("Only owner and fitting staff can record measurements.", 403);
+  }
+  try {
+    return Response.json(await recordMeasurement(db, session, await request.json()));
+  } catch (error) {
+    const mapped =
+      error instanceof InventoryActionError
+        ? error
+        : new InventoryActionError(500, "Measurement could not be saved.");
+    return jsonError(mapped.message, mapped.status);
+  }
+}
+
+/**
+ * Resolve a staff member the acting owner is allowed to administer.
+ *
+ * Tenant isolation is inviolable (CONTEXT.md rule 1): the target is looked up
+ * scoped to the SESSION's tenant, so an owner can never reach another shop's
+ * user even by guessing an id. Owners are excluded as targets, and an owner
+ * cannot act on themselves — together that makes it impossible to lock a shop
+ * out of its own account.
+ */
+async function resolveManageableStaff(
+  db: D1Database,
+  session: StaffProvisionSession,
+  userId: string,
+): Promise<Row> {
+  const row = await db
+    .prepare(`SELECT id, tenant_id, name, role, banned FROM "user" WHERE id = ? AND tenant_id = ?`)
+    .bind(userId, session.tenantId)
+    .first<Row>();
+  if (!row) throw new InventoryActionError(404, "Staff member not found.");
+  if (session.userId && str(row.id) === session.userId) {
+    throw new InventoryActionError(400, "You cannot change your own access.");
+  }
+  if (str(row.role) === "owner") {
+    throw new InventoryActionError(403, "The owner account cannot be changed here.");
+  }
+  return row;
+}
+
+async function staffAfterAdminAction(
+  db: D1Database,
+  session: StaffProvisionSession,
+  userId: string,
+  failure: string,
+): Promise<StaffProvisionReceipt> {
+  const userRow = await db
+    .prepare(`SELECT id, tenant_id, name, role, banned FROM "user" WHERE id = ? AND tenant_id = ?`)
+    .bind(userId, session.tenantId)
+    .first<Row>();
+  if (!userRow) throw new InventoryActionError(500, failure);
+  return { user: toUser(userRow), team: await getTenantTeam(db, session.tenantId) };
+}
+
+/**
+ * Revoke (or restore) a staff member's access. Deactivation bans the account
+ * rather than deleting it, so historical `cashier_name` attribution on past
+ * transactions stays intact.
+ */
+export async function setStaffAccess(
+  auth: Auth,
+  db: D1Database,
+  session: StaffProvisionSession,
+  headers: Headers,
+  input: unknown,
+): Promise<StaffProvisionReceipt> {
+  const fields = staffAccessFields(input);
+  if (!canProvisionStaff(session)) {
+    throw new InventoryActionError(403, "Only owners can change staff access.");
+  }
+  await resolveManageableStaff(db, session, fields.userId);
+
+  try {
+    if (fields.active) {
+      await auth.api.unbanUser({ headers, body: { userId: fields.userId } });
+    } else {
+      await auth.api.banUser({
+        headers,
+        body: { userId: fields.userId, banReason: "Access revoked by owner" },
+      });
+    }
+    return await staffAfterAdminAction(db, session, fields.userId, "Staff access could not be updated.");
+  } catch (error) {
+    throw staffAdminActionError(error, "Staff access could not be updated.");
+  }
+}
+
+/** Owner-initiated password reset for a staff member who is locked out. */
+export async function resetStaffPassword(
+  auth: Auth,
+  db: D1Database,
+  session: StaffProvisionSession,
+  headers: Headers,
+  input: unknown,
+): Promise<StaffProvisionReceipt> {
+  const fields = staffPasswordFields(input);
+  if (!canProvisionStaff(session)) {
+    throw new InventoryActionError(403, "Only owners can reset staff passwords.");
+  }
+  await resolveManageableStaff(db, session, fields.userId);
+
+  try {
+    await auth.api.setUserPassword({
+      headers,
+      body: { userId: fields.userId, newPassword: fields.password },
+    });
+    return await staffAfterAdminAction(db, session, fields.userId, "Password could not be reset.");
+  } catch (error) {
+    throw staffAdminActionError(error, "Password could not be reset.");
+  }
+}
+
+export async function handleStaffAccessRequest(
+  request: Request,
+  session: StaffProvisionSession | null,
+  auth: Auth,
+  headers: Headers,
+  db: D1Database,
+): Promise<Response> {
+  if (!session) return jsonError("Unauthorized", 401);
+  if (!canProvisionStaff(session)) return jsonError("Only owners can change staff access.", 403);
+  try {
+    const receipt = await setStaffAccess(auth, db, session, headers, await request.json());
+    return Response.json(receipt);
+  } catch (error) {
+    const mapped = staffAdminActionError(error, "Staff access could not be updated.");
+    return jsonError(mapped.message, mapped.status);
+  }
+}
+
+export async function handleStaffPasswordRequest(
+  request: Request,
+  session: StaffProvisionSession | null,
+  auth: Auth,
+  headers: Headers,
+  db: D1Database,
+): Promise<Response> {
+  if (!session) return jsonError("Unauthorized", 401);
+  if (!canProvisionStaff(session)) return jsonError("Only owners can reset staff passwords.", 403);
+  try {
+    const receipt = await resetStaffPassword(auth, db, session, headers, await request.json());
+    return Response.json(receipt);
+  } catch (error) {
+    const mapped = staffAdminActionError(error, "Password could not be reset.");
     return jsonError(mapped.message, mapped.status);
   }
 }
@@ -1357,6 +1837,391 @@ export async function handleReservationRequest(
     return Response.json({ receipt });
   } catch (error) {
     const mapped = reservationActionError(error);
+    return jsonError(mapped.message, mapped.status);
+  }
+}
+
+/*
+ * ---------------------------------------------------------------------------
+ * Public booking requests (Pro, reserve-only — CONCEPT.md)
+ *
+ * A request is an ENQUIRY, not a commitment: it deliberately does NOT write
+ * booking_days, so a pending request never blocks availability. Only the
+ * owner's approval turns it into a confirmed booking that occupies dates.
+ * ---------------------------------------------------------------------------
+ */
+
+/** Flood guards for the one unauthenticated write endpoint in the app. */
+const MAX_PENDING_REQUESTS_PER_CONTACT = 3;
+const MAX_PENDING_REQUESTS_PER_TENANT = 200;
+const BOOKING_REQUEST_TTL_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Read a shop's PUBLIC booking page by slug. Returns null when the page should
+ * not exist at all — unknown shop, suspended, or not on a plan with public
+ * booking — so the caller can 404 without revealing which of those it was.
+ *
+ * The projection is the privacy boundary: only the columns a visitor needs.
+ */
+export async function getPublicStore(db: D1Database, slug: string): Promise<PublicStore | null> {
+  const tenantRow = await db.prepare(`SELECT * FROM tenants WHERE id = ?`).bind(slug).first<Row>();
+  if (!tenantRow) return null;
+  const tenant = toTenant(tenantRow);
+  if (tenant.status === "suspended" || !rulesForTenant(tenant).publicBookingEnabled) return null;
+
+  const [itemRes, busyRes] = await db.batch<Row>([
+    db
+      .prepare(
+        `SELECT id, name, inventory_code, model, color, size_label, rental_price, photos_json
+         FROM inventory_items
+         WHERE tenant_id = ? AND status != 'maintenance'
+         ORDER BY name`,
+      )
+      .bind(tenant.id),
+    // Anonymous occupancy only: which piece is held between which dates.
+    db
+      .prepare(
+        `SELECT bi.item_id AS item_id, b.start_date AS start_date, b.end_date AS end_date
+         FROM bookings b
+         JOIN booking_items bi ON bi.booking_id = b.id AND bi.tenant_id = b.tenant_id
+         WHERE b.tenant_id = ? AND b.status IN ('confirmed', 'active', 'late')`,
+      )
+      .bind(tenant.id),
+  ]);
+
+  return {
+    tenant: {
+      id: tenant.id,
+      name: tenant.name,
+      subdomain: tenant.subdomain,
+      location: tenant.location,
+      whatsapp: tenant.whatsapp,
+      bookingDepositAmount: tenant.bookingDepositAmount,
+      bookingDepositPolicy: tenant.bookingDepositPolicy,
+    },
+    items: itemRes.results.map((r) => ({
+      id: str(r.id),
+      name: str(r.name),
+      inventoryCode: str(r.inventory_code),
+      model: str(r.model),
+      color: str(r.color),
+      sizeLabel: str(r.size_label),
+      rentalPrice: num(r.rental_price),
+      photos: parseJson<string[]>(r.photos_json, []),
+    })),
+    busy: busyRes.results.map((r) => ({
+      itemId: str(r.item_id),
+      startDate: str(r.start_date),
+      endDate: str(r.end_date),
+    })),
+  };
+}
+
+export async function handlePublicStoreRequest(slug: string, db: D1Database): Promise<Response> {
+  const store = await getPublicStore(db, slug);
+  if (!store) return jsonError("Booking page is not available.", 404);
+  return Response.json(store);
+}
+
+/**
+ * Create a booking request from the PUBLIC store page. There is no session
+ * here — the tenant arrives as a URL slug — so every fact is re-derived and
+ * re-validated server-side: the shop must exist, be active, and actually carry
+ * the Pro public-booking feature; the item must belong to that shop.
+ */
+export async function createPublicBookingRequest(
+  db: D1Database,
+  input: unknown,
+): Promise<PublicBookingRequestReceipt> {
+  const fields = publicBookingRequestFields(input);
+  const requestId = generateReadableId("BR");
+  const expiresAt = new Date(Date.now() + BOOKING_REQUEST_TTL_MS).toISOString();
+
+  const tenantRow = await db.prepare(`SELECT * FROM tenants WHERE id = ?`).bind(fields.tenantId).first<Row>();
+  // A missing, suspended, or non-Pro shop is indistinguishable from the outside:
+  // the public page simply does not exist.
+  if (!tenantRow) throw new InventoryActionError(404, "Booking page is not available.");
+  const tenant = toTenant(tenantRow);
+  if (tenant.status === "suspended" || !rulesForTenant(tenant).publicBookingEnabled) {
+    throw new InventoryActionError(404, "Booking page is not available.");
+  }
+
+  const item = await db
+    .prepare(`SELECT id FROM inventory_items WHERE id = ? AND tenant_id = ?`)
+    .bind(fields.itemId, tenant.id)
+    .first<Row>();
+  if (!item) throw new InventoryActionError(404, "Selected item is no longer available.");
+
+  // Cap how many pending requests one contact — and one shop — can accumulate.
+  // This is a flood guard, NOT a substitute for real IP rate limiting, which
+  // needs infrastructure (KV/Durable Objects) beyond this slice.
+  const pending = await db
+    .prepare(
+      `SELECT
+         (SELECT COUNT(*) FROM booking_requests WHERE tenant_id = ? AND status = 'pending') AS shop,
+         (SELECT COUNT(*) FROM booking_requests WHERE tenant_id = ? AND status = 'pending' AND whatsapp = ?) AS contact`,
+    )
+    .bind(tenant.id, tenant.id, fields.whatsapp)
+    .first<Row>();
+  if (num(pending?.contact) >= MAX_PENDING_REQUESTS_PER_CONTACT) {
+    throw new InventoryActionError(429, "You already have booking requests waiting. Please contact the store directly.");
+  }
+  if (num(pending?.shop) >= MAX_PENDING_REQUESTS_PER_TENANT) {
+    throw new InventoryActionError(429, "This store is not accepting new online requests right now.");
+  }
+
+  try {
+    await db
+      .prepare(
+        `INSERT INTO booking_requests
+          (id, tenant_id, item_id, customer_name, whatsapp, event_type, event_date, start_date, end_date,
+           deposit_amount, deposit_policy, payment_status, status, expires_at, notes, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unpaid', 'pending', ?, ?, ?)`,
+      )
+      .bind(
+        requestId,
+        tenant.id,
+        fields.itemId,
+        fields.customerName,
+        fields.whatsapp,
+        fields.eventType ?? null,
+        fields.eventDate ?? null,
+        fields.startDate,
+        fields.endDate,
+        tenant.bookingDepositAmount,
+        tenant.bookingDepositPolicy,
+        expiresAt,
+        fields.notes ?? null,
+        new Date().toISOString(),
+      )
+      .run();
+
+    const row = await db
+      .prepare(`SELECT * FROM booking_requests WHERE id = ? AND tenant_id = ?`)
+      .bind(requestId, tenant.id)
+      .first<Row>();
+    if (!row) throw new InventoryActionError(500, "Booking request could not be sent.");
+    return { request: toBookingRequest(row) };
+  } catch (error) {
+    throw bookingRequestActionError(error, "Booking request could not be sent.");
+  }
+}
+
+/**
+ * Owner/cashier approves a pending request, turning it into a confirmed
+ * booking. The booking_days inserts carry the same double-booking guarantee as
+ * a manual reservation: if the piece was committed elsewhere in the meantime,
+ * the whole approval aborts and the request stays pending.
+ */
+export async function approveBookingRequest(
+  db: D1Database,
+  session: PosActionSession,
+  input: unknown,
+): Promise<BookingRequestApprovalReceipt> {
+  const requestId = bookingRequestId(input);
+  if (!canWritePosTransaction(session)) {
+    throw new InventoryActionError(403, "Only owner and cashier users can approve booking requests.");
+  }
+
+  const requestRow = await db
+    .prepare(`SELECT * FROM booking_requests WHERE id = ? AND tenant_id = ?`)
+    .bind(requestId, session.tenantId)
+    .first<Row>();
+  if (!requestRow) throw new InventoryActionError(404, "Booking request not found.");
+  if (str(requestRow.status) !== "pending") {
+    throw new InventoryActionError(409, "Only pending booking requests can be approved.");
+  }
+
+  const itemRow = await db
+    .prepare(`SELECT * FROM inventory_items WHERE id = ? AND tenant_id = ?`)
+    .bind(str(requestRow.item_id), session.tenantId)
+    .first<Row>();
+  if (!itemRow) throw new InventoryActionError(409, "Requested item no longer exists.");
+
+  const itemId = str(requestRow.item_id);
+  const startDate = str(requestRow.start_date);
+  const endDate = str(requestRow.end_date);
+  const whatsapp = str(requestRow.whatsapp);
+  const normalizedWhatsapp = normalizePhone(whatsapp);
+  const customerId = generateReadableId("C");
+  const bookingId = generateReadableId("B");
+  const reservationDays = datesInRange(startDate, endDate);
+
+  try {
+    const batch = [
+      db
+        .prepare(
+          `INSERT INTO customers
+            (id, tenant_id, name, whatsapp, normalized_whatsapp, event_type, event_date, total_rentals, last_rental)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)
+           ON CONFLICT(tenant_id, normalized_whatsapp) DO UPDATE SET
+             name = excluded.name,
+             whatsapp = excluded.whatsapp,
+             event_type = COALESCE(excluded.event_type, customers.event_type),
+             event_date = COALESCE(excluded.event_date, customers.event_date),
+             updated_at = CURRENT_TIMESTAMP`,
+        )
+        .bind(
+          customerId,
+          session.tenantId,
+          str(requestRow.customer_name),
+          whatsapp,
+          normalizedWhatsapp,
+          requestRow.event_type ?? null,
+          requestRow.event_date ?? null,
+          startDate,
+        ),
+      // Only inserts while the request is still pending — so two racing
+      // approvals cannot both produce a booking.
+      db
+        .prepare(
+          `INSERT INTO bookings
+            (id, tenant_id, customer_id, start_date, end_date, status, total, deposit, notes)
+           SELECT ?, ?, c.id, ?, ?, 'confirmed', ?, ?, ?
+           FROM customers c
+           WHERE c.tenant_id = ? AND c.normalized_whatsapp = ?
+             AND EXISTS (
+               SELECT 1 FROM booking_requests r
+               WHERE r.id = ? AND r.tenant_id = ? AND r.status = 'pending'
+             )`,
+        )
+        .bind(
+          bookingId,
+          session.tenantId,
+          startDate,
+          endDate,
+          num(itemRow.rental_price),
+          num(requestRow.deposit_amount),
+          requestRow.notes ?? null,
+          session.tenantId,
+          normalizedWhatsapp,
+          requestId,
+          session.tenantId,
+        ),
+      db
+        .prepare(`INSERT INTO booking_items (booking_id, item_id, tenant_id) VALUES (?, ?, ?)`)
+        .bind(bookingId, itemId, session.tenantId),
+      ...reservationDays.map((date) =>
+        db
+          .prepare(`INSERT INTO booking_days (tenant_id, item_id, date, booking_id) VALUES (?, ?, ?, ?)`)
+          .bind(session.tenantId, itemId, date, bookingId),
+      ),
+      db
+        .prepare(
+          `UPDATE booking_requests SET status = 'approved'
+           WHERE id = ? AND tenant_id = ? AND status = 'pending'`,
+        )
+        .bind(requestId, session.tenantId),
+      db.prepare(`SELECT * FROM booking_requests WHERE id = ? AND tenant_id = ?`).bind(requestId, session.tenantId),
+      db
+        .prepare(`SELECT * FROM customers WHERE tenant_id = ? AND normalized_whatsapp = ?`)
+        .bind(session.tenantId, normalizedWhatsapp),
+      db.prepare(`SELECT * FROM bookings WHERE id = ? AND tenant_id = ?`).bind(bookingId, session.tenantId),
+      db.prepare(`SELECT * FROM inventory_items WHERE id = ? AND tenant_id = ?`).bind(itemId, session.tenantId),
+    ] satisfies D1PreparedStatement[];
+
+    const results = await db.batch<Row>(batch);
+    // Writes: customer, booking, booking_items, N booking_days, request update.
+    const baseIndex = 4 + reservationDays.length;
+    const updatedRequest = results[baseIndex].results[0];
+    const customerRow = results[baseIndex + 1].results[0];
+    const bookingRow = results[baseIndex + 2].results[0];
+    const finalItemRow = results[baseIndex + 3].results[0];
+
+    if (!updatedRequest || !customerRow || !bookingRow || !finalItemRow) {
+      throw new InventoryActionError(409, "Booking request could not be approved.");
+    }
+    if (str(updatedRequest.status) !== "approved") {
+      throw new InventoryActionError(409, "Only pending booking requests can be approved.");
+    }
+
+    return {
+      request: toBookingRequest(updatedRequest),
+      booking: toBooking(bookingRow, [itemId]),
+      customer: toCustomer(customerRow, []),
+      items: [toItem(finalItemRow)],
+      financeSummary: await getTenantFinanceSummary(db, session.tenantId),
+    };
+  } catch (error) {
+    throw bookingRequestActionError(error, "Booking request could not be approved.");
+  }
+}
+
+/** Owner/cashier declines a pending request. */
+export async function rejectBookingRequest(
+  db: D1Database,
+  session: PosActionSession,
+  input: unknown,
+): Promise<BookingRequestRejectionReceipt> {
+  const requestId = bookingRequestId(input);
+  if (!canWritePosTransaction(session)) {
+    throw new InventoryActionError(403, "Only owner and cashier users can reject booking requests.");
+  }
+
+  try {
+    const [, readBack] = await db.batch<Row>([
+      db
+        .prepare(
+          `UPDATE booking_requests SET status = 'rejected'
+           WHERE id = ? AND tenant_id = ? AND status = 'pending'`,
+        )
+        .bind(requestId, session.tenantId),
+      db.prepare(`SELECT * FROM booking_requests WHERE id = ? AND tenant_id = ?`).bind(requestId, session.tenantId),
+    ]);
+
+    const row = readBack.results[0];
+    if (!row) throw new InventoryActionError(404, "Booking request not found.");
+    if (str(row.status) !== "rejected") {
+      throw new InventoryActionError(409, "Only pending booking requests can be rejected.");
+    }
+    return { request: toBookingRequest(row) };
+  } catch (error) {
+    throw bookingRequestActionError(error, "Booking request could not be rejected.");
+  }
+}
+
+export async function handlePublicBookingRequest(request: Request, db: D1Database): Promise<Response> {
+  try {
+    const receipt = await createPublicBookingRequest(db, await request.json());
+    return Response.json(receipt);
+  } catch (error) {
+    const mapped = bookingRequestActionError(error, "Booking request could not be sent.");
+    return jsonError(mapped.message, mapped.status);
+  }
+}
+
+export async function handleBookingRequestApproval(
+  request: Request,
+  session: PosActionSession | null,
+  db: D1Database,
+): Promise<Response> {
+  if (!session) return jsonError("Unauthorized", 401);
+  if (!canWritePosTransaction(session)) {
+    return jsonError("Only owner and cashier users can approve booking requests.", 403);
+  }
+  try {
+    const receipt = await approveBookingRequest(db, session, await request.json());
+    return Response.json({ receipt });
+  } catch (error) {
+    const mapped = bookingRequestActionError(error, "Booking request could not be approved.");
+    return jsonError(mapped.message, mapped.status);
+  }
+}
+
+export async function handleBookingRequestRejection(
+  request: Request,
+  session: PosActionSession | null,
+  db: D1Database,
+): Promise<Response> {
+  if (!session) return jsonError("Unauthorized", 401);
+  if (!canWritePosTransaction(session)) {
+    return jsonError("Only owner and cashier users can reject booking requests.", 403);
+  }
+  try {
+    const receipt = await rejectBookingRequest(db, session, await request.json());
+    return Response.json({ receipt });
+  } catch (error) {
+    const mapped = bookingRequestActionError(error, "Booking request could not be rejected.");
     return jsonError(mapped.message, mapped.status);
   }
 }

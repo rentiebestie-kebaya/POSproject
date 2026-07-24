@@ -82,6 +82,26 @@ interface ReservationActionResponse {
   receipt: ReservationReceipt;
 }
 
+export interface BookingRequestApprovalReceipt {
+  request: BookingRequest;
+  booking: Booking;
+  customer: Customer;
+  items: KebayaItem[];
+  financeSummary?: FinanceSummary;
+}
+
+interface BookingRequestApprovalResponse {
+  receipt: BookingRequestApprovalReceipt;
+}
+
+interface BookingRequestRejectionResponse {
+  receipt: { request: BookingRequest };
+}
+
+interface PublicBookingRequestResponse {
+  request: BookingRequest;
+}
+
 interface StaffProvisionActionResponse {
   user: User;
   team: User[];
@@ -192,6 +212,28 @@ export interface StaffProvisionInput {
   role: Exclude<User["role"], "owner">;
 }
 
+export interface StaffAccessInput {
+  userId: string;
+  active: boolean;
+}
+
+export interface StaffPasswordInput {
+  userId: string;
+  password: string;
+}
+
+export interface AccountPasswordInput {
+  currentPassword: string;
+  newPassword: string;
+}
+
+export interface MeasurementInput {
+  customerId: string;
+  bust: number;
+  waist: number;
+  hip: number;
+}
+
 export interface CreateStoreInput {
   storeName: string;
   ownerName: string;
@@ -263,14 +305,18 @@ interface TenantContextValue {
   /** Edits the current tenant's inventory through the same server-authoritative write path. */
   editItem: (item: KebayaItem) => Promise<KebayaItem>;
   createReservation: (input: CreateReservationInput) => Promise<Booking>;
-  createPublicBookingRequest: (input: CreatePublicBookingRequestInput) => BookingRequest;
-  approveBookingRequest: (input: ApproveBookingRequestInput) => Booking;
-  rejectBookingRequest: (input: RejectBookingRequestInput) => BookingRequest;
+  createPublicBookingRequest: (input: CreatePublicBookingRequestInput) => Promise<BookingRequest>;
+  approveBookingRequest: (input: ApproveBookingRequestInput) => Promise<Booking>;
+  rejectBookingRequest: (input: RejectBookingRequestInput) => Promise<BookingRequest>;
   checkoutReservation: (input: CheckoutReservationInput) => TransactionReceipt;
   openTransaction: (input: OpenTransactionInput) => Promise<TransactionReceipt>;
   closeTransaction: (input: ReturnTransactionInput) => Promise<TransactionReceipt>;
   completeCleaning: (input: CleaningCompleteInput) => KebayaItem;
   provisionStaff: (input: StaffProvisionInput) => Promise<User>;
+  setStaffAccess: (input: StaffAccessInput) => Promise<User>;
+  changeOwnPassword: (input: AccountPasswordInput) => Promise<void>;
+  recordMeasurement: (input: MeasurementInput) => Promise<Customer>;
+  resetStaffPassword: (input: StaffPasswordInput) => Promise<User>;
 
   itemById: (id: string) => KebayaItem;
   customerById: (id: string) => Customer;
@@ -381,6 +427,79 @@ async function postReservationAction(body: CreateReservationInput): Promise<Rese
     throw new Error("Reservation could not be created.");
   }
   return payload.receipt;
+}
+
+async function postPublicBookingRequest(body: CreatePublicBookingRequestInput): Promise<BookingRequest> {
+  const res = await fetch("/api/public/booking-request", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const payload = await res.json().catch(() => null) as Partial<PublicBookingRequestResponse> & { error?: string } | null;
+  if (!res.ok) {
+    throw new Error(payload?.error || "Booking request could not be sent.");
+  }
+  if (!payload?.request) {
+    throw new Error("Booking request could not be sent.");
+  }
+  return payload.request;
+}
+
+async function postBookingRequestApproval(
+  body: ApproveBookingRequestInput,
+): Promise<BookingRequestApprovalReceipt> {
+  const res = await fetch("/api/bookings/requests/approve", {
+    method: "POST",
+    credentials: "include",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const payload = await res.json().catch(() => null) as Partial<BookingRequestApprovalResponse> & { error?: string } | null;
+  if (!res.ok) {
+    throw new Error(payload?.error || "Booking request could not be approved.");
+  }
+  if (!payload?.receipt) {
+    throw new Error("Booking request could not be approved.");
+  }
+  return payload.receipt;
+}
+
+async function postBookingRequestRejection(body: RejectBookingRequestInput): Promise<BookingRequest> {
+  const res = await fetch("/api/bookings/requests/reject", {
+    method: "POST",
+    credentials: "include",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const payload = await res.json().catch(() => null) as Partial<BookingRequestRejectionResponse> & { error?: string } | null;
+  if (!res.ok) {
+    throw new Error(payload?.error || "Booking request could not be rejected.");
+  }
+  if (!payload?.receipt?.request) {
+    throw new Error("Booking request could not be rejected.");
+  }
+  return payload.receipt.request;
+}
+
+async function postStaffAdminAction(
+  path: string,
+  body: StaffAccessInput | StaffPasswordInput,
+  failure: string,
+): Promise<StaffProvisionActionResponse> {
+  const res = await fetch(path, {
+    method: "POST",
+    credentials: "include",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const payload = await res.json().catch(() => null) as Partial<StaffProvisionActionResponse> & { error?: string } | null;
+  if (!res.ok) {
+    throw new Error(payload?.error || failure);
+  }
+  if (!payload?.user || !payload.team) {
+    throw new Error(failure);
+  }
+  return { user: payload.user, team: payload.team };
 }
 
 async function postStaffProvisionAction(body: StaffProvisionInput): Promise<StaffProvisionActionResponse> {
@@ -669,6 +788,74 @@ export function TenantProvider({ children }: { children: ReactNode }) {
       return provisioned.user;
     },
     [currentUser, realUser, realTenant, realTeam, tenantId, tenantList, userList],
+  );
+
+  // Change your own password — proves knowledge of the current one, unlike the
+  // owner's staff reset. Other sessions are revoked server-side.
+  const changeOwnPassword = useCallback(async (input: AccountPasswordInput): Promise<void> => {
+    if (!realUser) throw new Error("Changing your password requires a real login.");
+    const res = await fetch("/api/account/password", {
+      method: "POST",
+      credentials: "include",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(input),
+    });
+    const payload = await res.json().catch(() => null) as { error?: string } | null;
+    if (!res.ok) throw new Error(payload?.error || "Password could not be changed.");
+  }, [realUser]);
+
+  // Record a fitting measurement; the server returns the authoritative customer.
+  const recordMeasurement = useCallback(
+    async (input: MeasurementInput): Promise<Customer> => {
+      if (!realUser) throw new Error("Recording measurements requires a real login.");
+      const res = await fetch("/api/fitting/measurement", {
+        method: "POST",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(input),
+      });
+      const payload = await res.json().catch(() => null) as { customer?: Customer; error?: string } | null;
+      if (!res.ok || !payload?.customer) {
+        throw new Error(payload?.error || "Measurement could not be saved.");
+      }
+      const saved = payload.customer;
+      setData((prev) => {
+        const current = prev[saved.tenantId] ?? emptyDataset();
+        return {
+          ...prev,
+          [saved.tenantId]: {
+            ...current,
+            customers: current.customers.map((row) => (row.id === saved.id ? saved : row)),
+          },
+        };
+      });
+      return saved;
+    },
+    [realUser],
+  );
+
+  // Revoke or restore a staff member's login. Deactivation bans the account
+  // rather than deleting it, so past transactions keep their attribution.
+  const setStaffAccess = useCallback(
+    async (input: StaffAccessInput): Promise<User> => {
+      if (currentUser?.role !== "owner") throw new Error("Only owners can change staff access.");
+      if (!realUser) throw new Error("Staff accounts require real login.");
+      const updated = await postStaffAdminAction("/api/staff/access", input, "Staff access could not be updated.");
+      setRealTeam(updated.team);
+      return updated.user;
+    },
+    [currentUser, realUser],
+  );
+
+  const resetStaffPassword = useCallback(
+    async (input: StaffPasswordInput): Promise<User> => {
+      if (currentUser?.role !== "owner") throw new Error("Only owners can reset staff passwords.");
+      if (!realUser) throw new Error("Staff accounts require real login.");
+      const updated = await postStaffAdminAction("/api/staff/password", input, "Password could not be reset.");
+      setRealTeam(updated.team);
+      return updated.user;
+    },
+    [currentUser, realUser],
   );
 
   const buildStore = useCallback(
@@ -1102,64 +1289,47 @@ export function TenantProvider({ children }: { children: ReactNode }) {
   );
 
   const createPublicBookingRequest = useCallback(
-    (input: CreatePublicBookingRequestInput): BookingRequest => {
-      const tenant = tenantList.find((row) => row.id === input.tenantId);
-      const ds = tenant ? data[tenant.id] : undefined;
-      if (!tenant || !ds) {
-        throw new Error("Booking page is not available.");
-      }
-      const planRules = rulesForTenant(tenant);
-      if (!planRules.publicBookingEnabled) {
-        throw new Error("Public booking page is available on Pro. Upgrade plan to receive online booking requests.");
-      }
-      if (tenant.status === "suspended") {
-        throw new Error("Booking page is not available.");
-      }
-      if (!input.startDate || !input.endDate || input.endDate < input.startDate) {
-        throw new Error("Select a valid rental date range.");
-      }
-      if (input.startDate <= TODAY) {
-        throw new Error("Online booking requests must be for a future date.");
-      }
-      const item = ds.inventory.find((row) => row.id === input.itemId);
-      if (!item) {
-        throw new Error("Selected item is no longer available.");
-      }
-      const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
-      const request: BookingRequest = {
-        id: uniqueId("BR"),
-        tenantId: tenant.id,
-        itemId: item.id,
-        customerName: input.customerName.trim(),
-        whatsapp: input.whatsapp.trim(),
-        eventType: input.eventType?.trim() || undefined,
-        eventDate: input.eventDate || undefined,
-        startDate: input.startDate,
-        endDate: input.endDate,
-        depositAmount: tenant.bookingDepositAmount,
-        depositPolicy: tenant.bookingDepositPolicy,
-        paymentStatus: "unpaid",
-        status: "pending",
-        expiresAt,
-        notes: input.notes?.trim() || undefined,
-        createdAt: new Date().toISOString(),
-      };
-
-      setData((prev) => ({
-        ...prev,
-        [tenant.id]: {
-          ...prev[tenant.id],
-          bookingRequests: [request, ...prev[tenant.id].bookingRequests],
-        },
-      }));
-
-      return request;
+    async (input: CreatePublicBookingRequestInput): Promise<BookingRequest> => {
+      // The public booking page is unauthenticated and always server-backed:
+      // the server re-validates the shop slug, its plan and status, and the
+      // item, and owns the deposit terms. Nothing here is trusted from the page.
+      return await postPublicBookingRequest(input);
     },
-    [data, tenantList],
+    [],
   );
 
   const approveBookingRequest = useCallback(
-    (input: ApproveBookingRequestInput): Booking => {
+    async (input: ApproveBookingRequestInput): Promise<Booking> => {
+      // Real session: approval is a server-side write whose booking_days rows
+      // carry the double-booking guarantee. Apply the authoritative rows back.
+      if (realUser) {
+        const receipt = await postBookingRequestApproval(input);
+        const tid = receipt.booking.tenantId;
+        if (receipt.financeSummary) {
+          setServerFinanceSummaryByTenant((prev) => ({ ...prev, [tid]: receipt.financeSummary! }));
+        }
+        setData((prev) => {
+          const current = prev[tid] ?? emptyDataset();
+          const hasCustomer = current.customers.some((row) => row.id === receipt.customer.id);
+          const receiptItems = new Map(receipt.items.map((item) => [item.id, item]));
+          return {
+            ...prev,
+            [tid]: {
+              ...current,
+              inventory: current.inventory.map((item) => receiptItems.get(item.id) ?? item),
+              customers: hasCustomer
+                ? current.customers.map((row) => (row.id === receipt.customer.id ? receipt.customer : row))
+                : [receipt.customer, ...current.customers],
+              bookingRequests: current.bookingRequests.map((row) =>
+                row.id === receipt.request.id ? receipt.request : row,
+              ),
+              bookings: [receipt.booking, ...current.bookings.filter((row) => row.id !== receipt.booking.id)],
+            },
+          };
+        });
+        return receipt.booking;
+      }
+
       const ds = data[tenantId];
       const request = ds.bookingRequests.find((row) => row.id === input.requestId);
       if (!request || request.status !== "pending") {
@@ -1231,11 +1401,26 @@ export function TenantProvider({ children }: { children: ReactNode }) {
 
       return booking;
     },
-    [data, tenantId],
+    [data, tenantId, realUser],
   );
 
   const rejectBookingRequest = useCallback(
-    (input: RejectBookingRequestInput): BookingRequest => {
+    async (input: RejectBookingRequestInput): Promise<BookingRequest> => {
+      if (realUser) {
+        const rejected = await postBookingRequestRejection(input);
+        setData((prev) => {
+          const current = prev[rejected.tenantId] ?? emptyDataset();
+          return {
+            ...prev,
+            [rejected.tenantId]: {
+              ...current,
+              bookingRequests: current.bookingRequests.map((row) => (row.id === rejected.id ? rejected : row)),
+            },
+          };
+        });
+        return rejected;
+      }
+
       const ds = data[tenantId];
       const request = ds.bookingRequests.find((row) => row.id === input.requestId);
       if (!request || request.status !== "pending") {
@@ -1253,7 +1438,7 @@ export function TenantProvider({ children }: { children: ReactNode }) {
       }));
       return rejectedRequest;
     },
-    [data, tenantId],
+    [data, tenantId, realUser],
   );
 
   const checkoutReservation = useCallback(
@@ -1500,6 +1685,10 @@ export function TenantProvider({ children }: { children: ReactNode }) {
       closeTransaction,
       completeCleaning,
       provisionStaff,
+      setStaffAccess,
+      resetStaffPassword,
+      changeOwnPassword,
+      recordMeasurement,
       itemById: (id) => ds.inventory.find((i) => i.id === id)!,
       customerById: (id) => ds.customers.find((c) => c.id === id)!,
       conflictsFor: (itemId, start, end) => conflictsIn(ds.bookings, itemId, start, end),
@@ -1543,6 +1732,10 @@ export function TenantProvider({ children }: { children: ReactNode }) {
     closeTransaction,
     completeCleaning,
     provisionStaff,
+    setStaffAccess,
+    resetStaffPassword,
+    changeOwnPassword,
+    recordMeasurement,
   ]);
 
   return <TenantContext.Provider value={value}>{children}</TenantContext.Provider>;
