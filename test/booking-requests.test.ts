@@ -226,7 +226,18 @@ describe("public booking requests", () => {
     expect(serialized).not.toContain("timesRented");
     expect(Object.keys(store)).toEqual(["tenant", "items", "busy"]);
     expect(Object.keys(store.items[0]).sort()).toEqual(
-      ["color", "id", "inventoryCode", "model", "name", "photos", "rentalPrice", "sizeLabel"].sort(),
+      [
+        "color",
+        "id",
+        "inventoryCode",
+        "model",
+        "name",
+        "occasions",
+        "photos",
+        "rentalPrice",
+        "sizeLabel",
+        "wearStyle",
+      ].sort(),
     );
     // Busy ranges say what is taken, never by whom.
     for (const busy of store.busy) {

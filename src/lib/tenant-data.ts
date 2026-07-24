@@ -203,6 +203,8 @@ export interface PublicStoreItem {
   model: string;
   color: string;
   sizeLabel: string;
+  wearStyle: KebayaItem["wearStyle"];
+  occasions: string[];
   rentalPrice: number;
   photos: string[];
 }
@@ -1872,7 +1874,7 @@ export async function getPublicStore(db: D1Database, slug: string): Promise<Publ
   const [itemRes, busyRes] = await db.batch<Row>([
     db
       .prepare(
-        `SELECT id, name, inventory_code, model, color, size_label, rental_price, photos_json
+        `SELECT id, name, inventory_code, model, color, size_label, wear_style, occasions_json, rental_price, photos_json
          FROM inventory_items
          WHERE tenant_id = ? AND status != 'maintenance'
          ORDER BY name`,
@@ -1906,6 +1908,8 @@ export async function getPublicStore(db: D1Database, slug: string): Promise<Publ
       model: str(r.model),
       color: str(r.color),
       sizeLabel: str(r.size_label),
+      wearStyle: str(r.wear_style) === "non-hijab" ? "non-hijab" : "hijab",
+      occasions: parseJson<string[]>(r.occasions_json, []),
       rentalPrice: num(r.rental_price),
       photos: parseJson<string[]>(r.photos_json, []),
     })),
