@@ -290,6 +290,7 @@ function ReservationForm() {
   const [notes, setNotes] = useState("");
   const [success, setSuccess] = useState("");
   const [error, setError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
 
   const validRange = Boolean(startDate && endDate && endDate >= startDate);
   const futureRange = Boolean(startDate && startDate > TODAY);
@@ -357,10 +358,12 @@ function ReservationForm() {
     setSelectedIds((prev) => (prev.includes(itemId) ? prev.filter((id) => id !== itemId) : [...prev, itemId]));
   };
 
-  const handleCreate = () => {
+  const handleCreate = async () => {
+    if (submitting) return;
     resetMessages();
+    setSubmitting(true);
     try {
-      const booking = createReservation({
+      const booking = await createReservation({
         itemIds: selectedIds,
         customerName,
         whatsapp,
@@ -384,6 +387,8 @@ function ReservationForm() {
       setSuccess(`Reservation ${booking.id} confirmed. Inventory stays available until POS checkout.`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Reservation failed.");
+    } finally {
+      setSubmitting(false);
     }
   };
 
@@ -550,11 +555,11 @@ function ReservationForm() {
           {hasConflict && <p className="mt-3 text-xs font-medium text-critical">One selected item already has an overlapping reservation.</p>}
           <button
             type="button"
-            disabled={!formValid}
+            disabled={!formValid || submitting}
             onClick={handleCreate}
             className="mt-4 w-full rounded-full bg-brand-900 py-2.5 text-sm font-semibold text-white hover:bg-brand-800 disabled:cursor-not-allowed disabled:bg-brand-200"
           >
-            Create Future Reservation
+            {submitting ? "Saving…" : "Create Future Reservation"}
           </button>
         </div>
       </div>

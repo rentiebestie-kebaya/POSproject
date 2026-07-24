@@ -150,6 +150,23 @@ CREATE TABLE booking_items (
 
 CREATE INDEX idx_booking_items_item_id ON booking_items(item_id);
 
+-- Availability engine (ADR-0002, Phase 2). One row per item per committed day —
+-- across BOTH active same-day rentals (POS) and confirmed forward reservations.
+-- The PRIMARY KEY (item_id, date) IS the double-booking guard: a conflicting
+-- insert fails on the constraint inside the atomic batch, so correctness never
+-- depends on a write path remembering to re-check an overlap. Availability of an
+-- item for [start, end] is simply the absence of any row in that date range.
+CREATE TABLE booking_days (
+  tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  item_id TEXT NOT NULL REFERENCES inventory_items(id) ON DELETE RESTRICT,
+  date TEXT NOT NULL,
+  booking_id TEXT NOT NULL REFERENCES bookings(id) ON DELETE CASCADE,
+  PRIMARY KEY (item_id, date)
+);
+
+CREATE INDEX idx_booking_days_tenant ON booking_days(tenant_id, item_id, date);
+CREATE INDEX idx_booking_days_booking ON booking_days(booking_id);
+
 CREATE TABLE booking_requests (
   id TEXT PRIMARY KEY,
   tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,

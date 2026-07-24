@@ -21,6 +21,7 @@ import {
 import { useTenant } from "../data/store";
 import { BILLING_STATUS_LABEL, PLAN_LABEL, ROLE_LABEL } from "../data/mock";
 import { limitText } from "../data/plans";
+import { canAccessRoute } from "../lib/access";
 
 const NAV = [
   { to: "/app", label: "Dashboard", icon: LayoutDashboard, end: true },
@@ -84,7 +85,7 @@ export default function Layout({ children }: { children: ReactNode }) {
         </div>
 
         <nav className="mt-2 flex-1 space-y-1 px-3">
-          {NAV.map(({ to, label, icon: Icon, end }) => {
+          {NAV.filter(({ to }) => canAccessRoute(user.role, to)).map(({ to, label, icon: Icon, end }) => {
             const isActive = end ? pathname === to : pathname === to || pathname.startsWith(`${to}/`);
             return (
               <Link
@@ -106,32 +107,46 @@ export default function Layout({ children }: { children: ReactNode }) {
           })}
         </nav>
 
-        <Link
-          href="/app/settings"
-          title={sidebarCollapsed ? `${PLAN_LABEL[tenant.plan]} plan` : undefined}
-          className={`mx-3 mb-3 flex items-center border border-black/5 bg-white text-left shadow-[0_1px_2px_rgba(11,11,11,0.03)] transition-colors hover:bg-brand-50 ${
-            sidebarCollapsed ? "justify-center rounded-full p-2.5" : "gap-3 rounded-2xl p-3"
-          }`}
-        >
-          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-brand-900 text-gold-400">
-            <BadgeCheck size={17} />
-          </div>
-          {!sidebarCollapsed && (
-            <div className="min-w-0">
-              <div className="flex items-center gap-1.5">
-                <span className="truncate text-sm font-semibold">{PLAN_LABEL[tenant.plan]}</span>
-                <span className="rounded-full bg-warning/20 px-1.5 py-0.5 text-[10px] font-medium text-gold-600">
-                  {BILLING_STATUS_LABEL[tenant.billingStatus]}
-                </span>
+        {(() => {
+          // The plan card doubles as a shortcut to Settings, which only the
+          // owner may reach. For staff it stays as a plain, non-linking badge.
+          const canManagePlan = canAccessRoute(user.role, "/app/settings");
+          const cardClass = `mx-3 mb-3 flex items-center border border-black/5 bg-white text-left shadow-[0_1px_2px_rgba(11,11,11,0.03)] ${
+            canManagePlan ? "transition-colors hover:bg-brand-50" : ""
+          } ${sidebarCollapsed ? "justify-center rounded-full p-2.5" : "gap-3 rounded-2xl p-3"}`;
+          const cardTitle = sidebarCollapsed ? `${PLAN_LABEL[tenant.plan]} plan` : undefined;
+          const cardBody = (
+            <>
+              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-brand-900 text-gold-400">
+                <BadgeCheck size={17} />
               </div>
-              <div className="mt-1 text-[11px] leading-4 text-ink-2">
-                {inventory.length}/{limitText(planRules.inventoryLimit)} inventory
-                <span className="mx-1 text-hairline">|</span>
-                {team.length}/{planRules.staffLimit} users
-              </div>
+              {!sidebarCollapsed && (
+                <div className="min-w-0">
+                  <div className="flex items-center gap-1.5">
+                    <span className="truncate text-sm font-semibold">{PLAN_LABEL[tenant.plan]}</span>
+                    <span className="rounded-full bg-warning/20 px-1.5 py-0.5 text-[10px] font-medium text-gold-600">
+                      {BILLING_STATUS_LABEL[tenant.billingStatus]}
+                    </span>
+                  </div>
+                  <div className="mt-1 text-[11px] leading-4 text-ink-2">
+                    {inventory.length}/{limitText(planRules.inventoryLimit)} inventory
+                    <span className="mx-1 text-hairline">|</span>
+                    {team.length}/{planRules.staffLimit} users
+                  </div>
+                </div>
+              )}
+            </>
+          );
+          return canManagePlan ? (
+            <Link href="/app/settings" title={cardTitle} className={cardClass}>
+              {cardBody}
+            </Link>
+          ) : (
+            <div title={cardTitle} className={cardClass}>
+              {cardBody}
             </div>
-          )}
-        </Link>
+          );
+        })()}
 
         <div className={`border-t border-black/5 py-4 ${sidebarCollapsed ? "px-3" : "px-5"}`}>
           <button

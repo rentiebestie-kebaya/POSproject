@@ -47,7 +47,9 @@ function openInput(overrides: Partial<PosOpenInput> = {}): PosOpenInput {
     customerName: "Return Customer",
     whatsapp: "+62 812-7777-2222",
     startDate: "2026-07-21",
-    endDate: "2026-07-23",
+    // 07-21..07-22 is clear of every seeded booking; the seed reserves item
+    // I003 from 07-23, which the availability engine would (correctly) block.
+    endDate: "2026-07-22",
     baseRental: 700000,
     extraDayFee: 0,
     rentalTotal: 700000,

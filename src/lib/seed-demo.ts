@@ -20,6 +20,16 @@ export const DEMO_TENANT_ID = "demo";
 export const DEMO_TENANT_NAME = "Kebaya Demo";
 export const DEMO_SUBDOMAIN = "demo.rentie.id";
 
+/** Every ISO date from start..end inclusive, for seeding booking_days occupancy. */
+function seedDatesInRange(startDate: string, endDate: string): string[] {
+  const start = Date.parse(`${startDate}T00:00:00Z`);
+  const end = Date.parse(`${endDate}T00:00:00Z`);
+  if (Number.isNaN(start) || Number.isNaN(end) || end < start) return [];
+  const dates: string[] = [];
+  for (let t = start; t <= end; t += 86_400_000) dates.push(new Date(t).toISOString().slice(0, 10));
+  return dates;
+}
+
 /** The developer's demo/test login from Phase 0 onward. */
 export const DEMO_OWNER = {
   email: "demo@rentie.id",
@@ -56,6 +66,7 @@ export async function resetDemo(db: D1Database): Promise<void> {
   await db.batch([
     db.prepare(`DELETE FROM transaction_items WHERE tenant_id = ?`).bind(t),
     db.prepare(`DELETE FROM transactions WHERE tenant_id = ?`).bind(t),
+    db.prepare(`DELETE FROM booking_days WHERE tenant_id = ?`).bind(t),
     db.prepare(`DELETE FROM booking_items WHERE tenant_id = ?`).bind(t),
     db.prepare(`DELETE FROM bookings WHERE tenant_id = ?`).bind(t),
     db.prepare(`DELETE FROM booking_requests WHERE tenant_id = ?`).bind(t),
@@ -212,6 +223,20 @@ export async function seedDemo(db: D1Database, auth: Auth, source: DemoSource): 
           .prepare(`INSERT INTO booking_items (booking_id, item_id, tenant_id) VALUES (?, ?, ?)`)
           .bind(b.id, itemId, t),
       );
+    }
+    // Occupy the availability engine for bookings still holding their pieces
+    // (active same-day rentals + confirmed forward reservations). Returned or
+    // cancelled bookings free their days, so they get no booking_days rows.
+    if (b.status === "active" || b.status === "confirmed" || b.status === "late") {
+      for (const date of seedDatesInRange(b.startDate, b.endDate)) {
+        for (const itemId of b.itemIds) {
+          stmts.push(
+            db
+              .prepare(`INSERT INTO booking_days (tenant_id, item_id, date, booking_id) VALUES (?, ?, ?, ?)`)
+              .bind(t, itemId, date, b.id),
+          );
+        }
+      }
     }
   }
 

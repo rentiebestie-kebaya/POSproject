@@ -116,6 +116,33 @@ interface PosCloseFields extends PosCloseInput {
   returnDisposition: "available" | "maintenance";
 }
 
+export interface ReservationInput {
+  itemIds: string[];
+  customerName: string;
+  whatsapp: string;
+  instagram?: string;
+  email?: string;
+  eventType?: string;
+  eventDate?: string;
+  startDate: string;
+  endDate: string;
+  rentalTotal: number;
+  deposit: number;
+  notes?: string;
+}
+
+interface ReservationFields extends ReservationInput {
+  normalizedWhatsapp: string;
+}
+
+export interface ReservationReceipt {
+  tenant: Tenant;
+  customer: Customer;
+  booking: Booking;
+  items: KebayaItem[];
+  financeSummary: FinanceSummary;
+}
+
 interface InventoryFields {
   name: string;
   inventoryCode: string;
@@ -174,6 +201,28 @@ function generateReadableId(prefix: string): string {
 
 function todayIsoDate(): string {
   return new Date().toISOString().slice(0, 10);
+}
+
+/**
+ * Every ISO date from `startDate`..`endDate` inclusive — one entry per day the
+ * item is held. Rental ranges are days, not months; a hard cap keeps a fat-
+ * fingered date from expanding into a runaway insert list.
+ */
+const MAX_BOOKING_DAYS = 366;
+function datesInRange(startDate: string, endDate: string): string[] {
+  const start = Date.parse(`${startDate}T00:00:00Z`);
+  const end = Date.parse(`${endDate}T00:00:00Z`);
+  if (Number.isNaN(start) || Number.isNaN(end) || end < start) {
+    throw new InventoryActionError(400, "Select a valid rental date range.");
+  }
+  const dates: string[] = [];
+  for (let t = start; t <= end; t += 86_400_000) {
+    dates.push(new Date(t).toISOString().slice(0, 10));
+    if (dates.length > MAX_BOOKING_DAYS) {
+      throw new InventoryActionError(400, "Rental date range is too long.");
+    }
+  }
+  return dates;
 }
 
 function requiredText(row: Row, key: string, label: string): string {
@@ -344,6 +393,37 @@ function posCloseFields(input: unknown): PosCloseFields {
   };
 }
 
+function reservationFields(input: unknown): ReservationFields {
+  const row = record(input);
+  const startDate = requiredText(row, "startDate", "Start date");
+  const endDate = requiredText(row, "endDate", "End date");
+  if (endDate < startDate) throw new InventoryActionError(400, "Select a valid reservation date range.");
+  if (startDate <= todayIsoDate()) {
+    throw new InventoryActionError(
+      400,
+      "Reservations are for future dates — use POS Rental for today's in-store transactions.",
+    );
+  }
+  const whatsapp = requiredText(row, "whatsapp", "WhatsApp");
+  const normalizedWhatsapp = normalizePhone(whatsapp);
+  if (normalizedWhatsapp.length < 6) throw new InventoryActionError(400, "WhatsApp number is required.");
+  return {
+    itemIds: positiveItemIds(row.itemIds),
+    customerName: requiredText(row, "customerName", "Customer name"),
+    whatsapp,
+    normalizedWhatsapp,
+    instagram: optionalNonEmpty(row, "instagram"),
+    email: optionalNonEmpty(row, "email"),
+    eventType: optionalNonEmpty(row, "eventType"),
+    eventDate: optionalNonEmpty(row, "eventDate"),
+    startDate,
+    endDate,
+    rentalTotal: money(row, "rentalTotal"),
+    deposit: money(row, "deposit"),
+    notes: optionalNonEmpty(row, "notes"),
+  };
+}
+
 function jsonError(message: string, status: number): Response {
   return Response.json({ error: message }, { status });
 }
@@ -391,6 +471,18 @@ function posCloseActionError(error: unknown): InventoryActionError {
     return new InventoryActionError(409, "Return could not be recorded.");
   }
   return new InventoryActionError(500, "Return could not be recorded.");
+}
+
+function reservationActionError(error: unknown): InventoryActionError {
+  if (error instanceof InventoryActionError) return error;
+  const message = error instanceof Error ? error.message : String(error);
+  if (message.includes("UNIQUE constraint failed: booking_days")) {
+    return new InventoryActionError(409, "One or more items are already reserved for those dates.");
+  }
+  if (message.includes("FOREIGN KEY constraint failed")) {
+    return new InventoryActionError(409, "Select valid inventory items before reserving.");
+  }
+  return new InventoryActionError(500, "Reservation could not be created.");
 }
 
 function staffProvisionActionError(error: unknown): InventoryActionError {
@@ -927,6 +1019,7 @@ export async function openPosTransaction(
   const itemPlaceholders = placeholders(fields.itemIds.length);
   const totalDue = fields.rentalTotal + fields.deposit;
   const evidenceJson = JSON.stringify(fields.evidence ?? {});
+  const rentalDays = datesInRange(fields.startDate, fields.endDate);
 
   try {
     const batch = [
@@ -1029,6 +1122,16 @@ export async function openPosTransaction(
            WHERE tenant_id = ? AND status = 'available' AND id IN (${itemPlaceholders})`,
         )
         .bind(session.tenantId, ...fields.itemIds),
+      // Occupy the rental's dates in the availability engine. If any item is
+      // already committed for a day in this range (e.g. a forward reservation),
+      // the (item_id, date) primary key fails and aborts the whole checkout.
+      ...rentalDays.flatMap((date) =>
+        fields.itemIds.map((itemId) =>
+          db
+            .prepare(`INSERT INTO booking_days (tenant_id, item_id, date, booking_id) VALUES (?, ?, ?, ?)`)
+            .bind(session.tenantId, itemId, date, bookingId),
+        ),
+      ),
       db.prepare(`SELECT * FROM tenants WHERE id = ?`).bind(session.tenantId),
       db
         .prepare(`SELECT * FROM customers WHERE tenant_id = ? AND normalized_whatsapp = ?`)
@@ -1045,7 +1148,10 @@ export async function openPosTransaction(
     ] satisfies D1PreparedStatement[];
 
     const results = await db.batch<Row>(batch);
-    const baseIndex = 4 + fields.itemIds.length * 2;
+    // Writes before the select-backs: customer, booking, N booking_items,
+    // transaction, N transaction_items, inventory update, then
+    // (rentalDays × itemIds) booking_days rows.
+    const baseIndex = 4 + fields.itemIds.length * 2 + rentalDays.length * fields.itemIds.length;
     const tenantRow = results[baseIndex].results[0];
     const customerRow = results[baseIndex + 1].results[0];
     const bookingRow = results[baseIndex + 2].results[0];
@@ -1093,6 +1199,164 @@ export async function handlePosOpenRequest(
     return Response.json({ receipt });
   } catch (error) {
     const mapped = posActionError(error);
+    return jsonError(mapped.message, mapped.status);
+  }
+}
+
+/**
+ * Create a confirmed FORWARD reservation (ADR-0002, Phase 2). Unlike a POS
+ * checkout, this does not touch inventory `status` — a piece booked for next
+ * month is still available today. The double-booking guarantee comes entirely
+ * from the booking_days inserts: the (item_id, date) primary key makes any
+ * overlapping commitment — another reservation OR an active POS rental — abort
+ * the whole batch. There is no read-then-write race to reason about.
+ */
+export async function createReservation(
+  db: D1Database,
+  session: PosActionSession,
+  input: unknown,
+): Promise<ReservationReceipt> {
+  const fields = reservationFields(input);
+  const customerId = generateReadableId("C");
+  const bookingId = generateReadableId("B");
+  const itemPlaceholders = placeholders(fields.itemIds.length);
+  const reservationDays = datesInRange(fields.startDate, fields.endDate);
+
+  // Plan gate, server-side: forward booking is a Starter+ feature. Enforced
+  // here from the tenant's effective rules, not just in the client.
+  const tenantForPlan = await db.prepare(`SELECT * FROM tenants WHERE id = ?`).bind(session.tenantId).first<Row>();
+  if (!tenantForPlan) throw new InventoryActionError(404, "Store not found.");
+  if (!rulesForTenant(toTenant(tenantForPlan)).manualBookingEnabled) {
+    throw new InventoryActionError(403, "Manual booking is available on Starter and Pro. Upgrade to create reservations.");
+  }
+
+  try {
+    const batch = [
+      // Customer upsert — a reservation does NOT increment total_rentals
+      // (nothing has gone out yet); it only refreshes contact details + event.
+      db
+        .prepare(
+          `INSERT INTO customers
+            (id, tenant_id, name, whatsapp, normalized_whatsapp, instagram, email, event_type, event_date,
+             total_rentals, last_rental)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
+           ON CONFLICT(tenant_id, normalized_whatsapp) DO UPDATE SET
+             name = excluded.name,
+             whatsapp = excluded.whatsapp,
+             instagram = COALESCE(excluded.instagram, customers.instagram),
+             email = COALESCE(excluded.email, customers.email),
+             event_type = COALESCE(excluded.event_type, customers.event_type),
+             event_date = COALESCE(excluded.event_date, customers.event_date),
+             updated_at = CURRENT_TIMESTAMP`,
+        )
+        .bind(
+          customerId,
+          session.tenantId,
+          fields.customerName,
+          fields.whatsapp,
+          fields.normalizedWhatsapp,
+          fields.instagram ?? null,
+          fields.email ?? null,
+          fields.eventType ?? null,
+          fields.eventDate ?? null,
+          fields.startDate,
+        ),
+      // Confirmed booking — inserted only if every item id belongs to this
+      // tenant. (Date availability is enforced by the booking_days inserts.)
+      db
+        .prepare(
+          `INSERT INTO bookings
+            (id, tenant_id, customer_id, start_date, end_date, status, total, deposit, notes)
+           SELECT ?, ?, c.id, ?, ?, 'confirmed', ?, ?, ?
+           FROM customers c
+           WHERE c.tenant_id = ? AND c.normalized_whatsapp = ?
+             AND (
+               SELECT COUNT(*) FROM inventory_items
+               WHERE tenant_id = ? AND id IN (${itemPlaceholders})
+             ) = ?`,
+        )
+        .bind(
+          bookingId,
+          session.tenantId,
+          fields.startDate,
+          fields.endDate,
+          fields.rentalTotal,
+          fields.deposit,
+          fields.notes ?? null,
+          session.tenantId,
+          fields.normalizedWhatsapp,
+          session.tenantId,
+          ...fields.itemIds,
+          fields.itemIds.length,
+        ),
+      ...fields.itemIds.map((itemId) =>
+        db
+          .prepare(`INSERT INTO booking_items (booking_id, item_id, tenant_id) VALUES (?, ?, ?)`)
+          .bind(bookingId, itemId, session.tenantId),
+      ),
+      ...reservationDays.flatMap((date) =>
+        fields.itemIds.map((itemId) =>
+          db
+            .prepare(`INSERT INTO booking_days (tenant_id, item_id, date, booking_id) VALUES (?, ?, ?, ?)`)
+            .bind(session.tenantId, itemId, date, bookingId),
+        ),
+      ),
+      db.prepare(`SELECT * FROM tenants WHERE id = ?`).bind(session.tenantId),
+      db
+        .prepare(`SELECT * FROM customers WHERE tenant_id = ? AND normalized_whatsapp = ?`)
+        .bind(session.tenantId, fields.normalizedWhatsapp),
+      db.prepare(`SELECT * FROM bookings WHERE id = ? AND tenant_id = ?`).bind(bookingId, session.tenantId),
+      db.prepare(`SELECT booking_id, item_id FROM booking_items WHERE booking_id = ? ORDER BY rowid`).bind(bookingId),
+      db
+        .prepare(`SELECT * FROM inventory_items WHERE tenant_id = ? AND id IN (${itemPlaceholders})`)
+        .bind(session.tenantId, ...fields.itemIds),
+    ] satisfies D1PreparedStatement[];
+
+    const results = await db.batch<Row>(batch);
+    // Writes before the select-backs: customer, booking, N booking_items,
+    // (reservationDays × itemIds) booking_days rows.
+    const baseIndex = 2 + fields.itemIds.length + reservationDays.length * fields.itemIds.length;
+    const tenantRow = results[baseIndex].results[0];
+    const customerRow = results[baseIndex + 1].results[0];
+    const bookingRow = results[baseIndex + 2].results[0];
+    const bookingItemRows = results[baseIndex + 3].results;
+    const itemRows = results[baseIndex + 4].results;
+
+    if (!tenantRow || !customerRow || !bookingRow || itemRows.length !== fields.itemIds.length) {
+      throw new InventoryActionError(409, "One or more items could not be reserved.");
+    }
+
+    const bookingItemIds = bookingItemRows.map((row) => str(row.item_id));
+    const itemsById = new Map(itemRows.map((row) => [str(row.id), toItem(row)]));
+    const items = fields.itemIds
+      .map((id) => itemsById.get(id))
+      .filter((item): item is KebayaItem => Boolean(item));
+
+    return {
+      tenant: toTenant(tenantRow),
+      customer: toCustomer(customerRow, []),
+      booking: toBooking(bookingRow, bookingItemIds),
+      items,
+      financeSummary: await getTenantFinanceSummary(db, session.tenantId),
+    };
+  } catch (error) {
+    throw reservationActionError(error);
+  }
+}
+
+export async function handleReservationRequest(
+  request: Request,
+  session: PosActionSession | null,
+  db: D1Database,
+): Promise<Response> {
+  if (!session) return jsonError("Unauthorized", 401);
+  if (!canWritePosTransaction(session)) return jsonError("Only owner and cashier users can create reservations.", 403);
+  try {
+    const payload = await request.json();
+    const receipt = await createReservation(db, session, payload);
+    return Response.json({ receipt });
+  } catch (error) {
+    const mapped = reservationActionError(error);
     return jsonError(mapped.message, mapped.status);
   }
 }
@@ -1192,6 +1456,10 @@ export async function closePosTransaction(
              )`,
         )
         .bind(targetStatus, session.tenantId, transactionId, session.tenantId),
+      // Returning the pieces frees their days back into the availability engine.
+      db
+        .prepare(`DELETE FROM booking_days WHERE booking_id = ? AND tenant_id = ?`)
+        .bind(fields.bookingId, session.tenantId),
       db.prepare(`SELECT * FROM tenants WHERE id = ?`).bind(session.tenantId),
       db
         .prepare(
@@ -1220,13 +1488,14 @@ export async function closePosTransaction(
         .bind(fields.bookingId, session.tenantId),
     ] satisfies D1PreparedStatement[]);
 
-    const tenantRow = results[4].results[0];
-    const customerRow = results[5].results[0];
-    const bookingRow = results[6].results[0];
-    const bookingItemRows = results[7].results;
-    const transactionRow = results[8].results[0];
-    const transactionItemRows = results[9].results;
-    const itemRows = results[10].results;
+    // Select-backs shift by one to make room for the booking_days DELETE above.
+    const tenantRow = results[5].results[0];
+    const customerRow = results[6].results[0];
+    const bookingRow = results[7].results[0];
+    const bookingItemRows = results[8].results;
+    const transactionRow = results[9].results[0];
+    const transactionItemRows = results[10].results;
+    const itemRows = results[11].results;
 
     if (!tenantRow || !customerRow || !bookingRow || !transactionRow || itemRows.length === 0) {
       throw new InventoryActionError(409, "Only active rentals can be returned.");

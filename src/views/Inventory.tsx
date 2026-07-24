@@ -8,6 +8,7 @@ import {
 } from "lucide-react";
 import { Card, PageHeader, ItemStatusBadge, BookedBadge, GradeBadge, Th, Td } from "../components/Ui";
 import { useTenant, type InventoryItemDraft } from "../data/store";
+import { canEditInventory } from "../lib/access";
 import {
   formatIDR,
   formatDate,
@@ -87,7 +88,7 @@ function Section({ icon: Icon, title, children }: { icon: typeof Tag; title: str
 
 /* ---------- detail modal ---------- */
 
-function ItemModal({ item, onClose, onEdit }: { item: KebayaItem; onClose: () => void; onEdit: () => void }) {
+function ItemModal({ item, onClose, onEdit, canEdit }: { item: KebayaItem; onClose: () => void; onEdit: () => void; canEdit: boolean }) {
   const { futureBookingFor } = useTenant();
   const booking = futureBookingFor(item.id);
   const [active, setActive] = useState(0);
@@ -106,12 +107,14 @@ function ItemModal({ item, onClose, onEdit }: { item: KebayaItem; onClose: () =>
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <button
-            onClick={onEdit}
-            className="flex items-center gap-1.5 rounded-full border border-black/10 px-3 py-1.5 text-sm font-medium hover:bg-brand-50"
-          >
-            <Pencil size={14} /> Edit
-          </button>
+          {canEdit && (
+            <button
+              onClick={onEdit}
+              className="flex items-center gap-1.5 rounded-full border border-black/10 px-3 py-1.5 text-sm font-medium hover:bg-brand-50"
+            >
+              <Pencil size={14} /> Edit
+            </button>
+          )}
           <button onClick={onClose} className="rounded-full p-1.5 text-ink-3 hover:bg-black/5" aria-label="Close">
             <X size={18} />
           </button>
@@ -643,7 +646,8 @@ function ItemTable({ rows, onOpen }: { rows: KebayaItem[]; onOpen: (id: string) 
 /* ---------- page ---------- */
 
 export default function Inventory() {
-  const { tenant, inventory: items, planRules, addItem, editItem } = useTenant();
+  const { tenant, inventory: items, planRules, addItem, editItem, user } = useTenant();
+  const canEdit = canEditInventory(user.role);
   const [view, setView] = useState<"grid" | "list">("grid");
   const [status, setStatus] = useState<(typeof STATUS_FILTERS)[number]>("all");
   const [dateSort, setDateSort] = useState<"newest" | "oldest">("newest");
@@ -687,22 +691,24 @@ export default function Inventory() {
             <button className="flex items-center gap-1.5 rounded-full border border-black/10 bg-white px-3.5 py-2 text-sm font-medium hover:bg-brand-50">
               <QrCode size={15} /> Print QR tags
             </button>
-            <button
-              onClick={() => {
-                setError("");
-                if (inventoryLocked) {
-                  setError(`Inventory limit reached. ${tenant.name} can store ${planRules.inventoryLimit} items on ${tenant.plan}.`);
-                  return;
-                }
-                setAdding(true);
-              }}
-              className={`flex items-center gap-1.5 rounded-full px-3.5 py-2 text-sm font-medium text-white ${
-                inventoryLocked ? "bg-brand-300" : "bg-brand-900 hover:bg-brand-800"
-              }`}
-              title={inventoryLocked ? "Upgrade plan or set a /dev override to add more inventory." : undefined}
-            >
-              <Plus size={15} /> Add kebaya
-            </button>
+            {canEdit && (
+              <button
+                onClick={() => {
+                  setError("");
+                  if (inventoryLocked) {
+                    setError(`Inventory limit reached. ${tenant.name} can store ${planRules.inventoryLimit} items on ${tenant.plan}.`);
+                    return;
+                  }
+                  setAdding(true);
+                }}
+                className={`flex items-center gap-1.5 rounded-full px-3.5 py-2 text-sm font-medium text-white ${
+                  inventoryLocked ? "bg-brand-300" : "bg-brand-900 hover:bg-brand-800"
+                }`}
+                title={inventoryLocked ? "Upgrade plan or set a /dev override to add more inventory." : undefined}
+              >
+                <Plus size={15} /> Add kebaya
+              </button>
+            )}
           </>
         }
       />
@@ -769,6 +775,7 @@ export default function Inventory() {
       {openItem && (
         <ItemModal
           item={openItem}
+          canEdit={canEdit}
           onClose={() => setOpenId(null)}
           onEdit={() => {
             setOpenId(null);

@@ -70,6 +70,18 @@ interface PosCloseActionResponse {
   receipt: TransactionReceipt;
 }
 
+export interface ReservationReceipt {
+  tenant: Tenant;
+  booking: Booking;
+  customer: Customer;
+  items: KebayaItem[];
+  financeSummary?: FinanceSummary;
+}
+
+interface ReservationActionResponse {
+  receipt: ReservationReceipt;
+}
+
 interface StaffProvisionActionResponse {
   user: User;
   team: User[];
@@ -250,7 +262,7 @@ interface TenantContextValue {
   addItem: (item: InventoryItemDraft) => Promise<KebayaItem>;
   /** Edits the current tenant's inventory through the same server-authoritative write path. */
   editItem: (item: KebayaItem) => Promise<KebayaItem>;
-  createReservation: (input: CreateReservationInput) => Booking;
+  createReservation: (input: CreateReservationInput) => Promise<Booking>;
   createPublicBookingRequest: (input: CreatePublicBookingRequestInput) => BookingRequest;
   approveBookingRequest: (input: ApproveBookingRequestInput) => Booking;
   rejectBookingRequest: (input: RejectBookingRequestInput) => BookingRequest;
@@ -350,6 +362,23 @@ async function postPosCloseAction(body: ReturnTransactionInput): Promise<Transac
   }
   if (!payload?.receipt) {
     throw new Error("Return could not be recorded.");
+  }
+  return payload.receipt;
+}
+
+async function postReservationAction(body: CreateReservationInput): Promise<ReservationReceipt> {
+  const res = await fetch("/api/bookings/reserve", {
+    method: "POST",
+    credentials: "include",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const payload = await res.json().catch(() => null) as Partial<ReservationActionResponse> & { error?: string } | null;
+  if (!res.ok) {
+    throw new Error(payload?.error || "Reservation could not be created.");
+  }
+  if (!payload?.receipt) {
+    throw new Error("Reservation could not be created.");
   }
   return payload.receipt;
 }
@@ -963,7 +992,32 @@ export function TenantProvider({ children }: { children: ReactNode }) {
   );
 
   const createReservation = useCallback(
-    (input: CreateReservationInput): Booking => {
+    async (input: CreateReservationInput): Promise<Booking> => {
+      // Real session: the server-authoritative availability engine owns the
+      // double-booking guarantee (booking_days). We post, then apply the
+      // returned authoritative customer + booking to the cache (pessimistic).
+      if (realUser) {
+        const receipt = await postReservationAction(input);
+        if (receipt.financeSummary) {
+          setServerFinanceSummaryByTenant((prev) => ({ ...prev, [receipt.tenant.id]: receipt.financeSummary! }));
+        }
+        setData((prev) => {
+          const current = prev[receipt.tenant.id] ?? emptyDataset();
+          const hasCustomer = current.customers.some((row) => row.id === receipt.customer.id);
+          return {
+            ...prev,
+            [receipt.tenant.id]: {
+              ...current,
+              customers: hasCustomer
+                ? current.customers.map((row) => (row.id === receipt.customer.id ? receipt.customer : row))
+                : [receipt.customer, ...current.customers],
+              bookings: [receipt.booking, ...current.bookings.filter((row) => row.id !== receipt.booking.id)],
+            },
+          };
+        });
+        return receipt.booking;
+      }
+
       const tenant = tenantList.find((row) => row.id === tenantId)!;
       const planRules = rulesForTenant(tenant);
       if (!planRules.manualBookingEnabled) {
@@ -1044,7 +1098,7 @@ export function TenantProvider({ children }: { children: ReactNode }) {
 
       return booking;
     },
-    [data, tenantId, tenantList],
+    [data, tenantId, tenantList, realUser],
   );
 
   const createPublicBookingRequest = useCallback(
