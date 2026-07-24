@@ -15,6 +15,7 @@ import {
   Users,
   Wallet,
 } from "lucide-react";
+import { PLAN_RULES, limitText } from "../data/plans";
 import { useTenant } from "../data/store";
 
 const FEATURES = [
@@ -70,11 +71,32 @@ const STEPS = [
 
 const PLANS = [
   {
+    name: "Free",
+    price: "Rp 0",
+    tagline: "Untuk mulai mencatat rental",
+    features: [
+      "1 owner account",
+      `Sampai ${limitText(PLAN_RULES.free.inventoryLimit)} koleksi`,
+      "Kasir sewa & kembali",
+      "Struk digital RENTIE",
+    ],
+    highlight: false,
+    href: "/signup",
+    cta: "Mulai Gratis",
+  },
+  {
     name: "Starter",
     price: "Rp 99.000",
     tagline: "Untuk butik yang baru mulai",
-    features: ["1 store account", "Sampai 100 koleksi", "Kasir & booking", "Struk digital"],
+    features: [
+      "Owner + 2 staf",
+      `Sampai ${limitText(PLAN_RULES.starter.inventoryLimit)} koleksi`,
+      "Kasir & booking manual",
+      "Riwayat pelanggan",
+    ],
     highlight: false,
+    href: "/login",
+    cta: "Coba Demo",
   },
   {
     name: "Pro",
@@ -87,6 +109,8 @@ const PLANS = [
       "Katalog online (segera)",
     ],
     highlight: true,
+    href: "/login",
+    cta: "Coba Demo",
   },
 ];
 
@@ -357,17 +381,17 @@ export default function Landing() {
           </h2>
           <p className="mt-4 text-base text-ink-2">Berlangganan bulanan, berhenti kapan saja.</p>
         </div>
-        <div className="mt-14 grid max-w-4xl gap-5 md:grid-cols-2">
+        <div className="mt-14 grid gap-5 lg:grid-cols-3">
           {PLANS.map((plan) => (
             <div
               key={plan.name}
-              className={`rounded-3xl p-8 ${
+              className={`flex min-h-[28rem] flex-col rounded-3xl p-8 ${
                 plan.highlight
                   ? "bg-brand-900 text-brand-100"
                   : "border border-black/5 bg-page"
               }`}
             >
-              <div className="flex items-center justify-between">
+              <div className="flex min-h-7 items-start justify-between gap-3">
                 <h3
                   className={`text-sm font-semibold ${plan.highlight ? "text-white" : ""}`}
                 >
@@ -419,14 +443,14 @@ export default function Landing() {
                 ))}
               </ul>
               <Link
-                href="/login"
-                className={`mt-8 block rounded-full px-5 py-3 text-center text-sm font-semibold transition ${
+                href={plan.href}
+                className={`mt-auto block rounded-full px-5 py-3 text-center text-sm font-semibold transition ${
                   plan.highlight
                     ? "bg-gold-500 text-brand-900 hover:bg-gold-400"
                     : "border border-ink/15 hover:border-ink/40"
                 }`}
               >
-                Coba Demo
+                {plan.cta}
               </Link>
             </div>
           ))}
