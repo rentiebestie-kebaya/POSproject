@@ -3,7 +3,6 @@
 import Link from "next/link";
 import {
   ArrowRight,
-  ArrowUpRight,
   CalendarDays,
   Check,
   LineChart,
@@ -485,11 +484,6 @@ export default function Landing() {
               </div>
               <ul className="mt-4 space-y-2.5 text-sm text-ink-2">
                 <li><Link href="/login" className="hover:text-ink">Masuk</Link></li>
-                <li>
-                  <Link href="/dev" className="inline-flex items-center gap-1 hover:text-ink">
-                    Developer Console <ArrowUpRight size={13} />
-                  </Link>
-                </li>
               </ul>
             </div>
           </div>
