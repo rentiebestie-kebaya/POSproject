@@ -26,6 +26,7 @@ const demoSource: DemoSource = {
 const OTHER_TENANT = "other";
 const OTHER_ITEM = "OTHER-ITEM-1";
 const OTHER_OWNER = { email: "other-owner@other.test", password: "password123", name: "Other Owner" };
+const EMPTY_TENANT = "empty-tenant";
 
 /** Seeds a minimal second tenant with one distinctive item + its owner account. */
 async function seedOtherTenant() {
@@ -108,6 +109,21 @@ describe("bootstrap read", () => {
     expect(other.dataset.inventory).toHaveLength(1);
     expect(other.dataset.inventory[0].id).toBe(OTHER_ITEM);
     expect(other.tenant?.id).toBe(OTHER_TENANT);
+  });
+
+  it("returns a dashboard-safe revenue series for a newly created tenant", async () => {
+    await env.DB
+      .prepare(
+        `INSERT INTO tenants (id, name, subdomain, location, whatsapp, booking_deposit_policy)
+         VALUES (?, 'Empty Shop', 'empty-shop.rentie.id', 'Jakarta', '+62 811-0000-0001', 'non_refundable')`,
+      )
+      .bind(EMPTY_TENANT)
+      .run();
+
+    const boot = await getTenantBootstrap(env.DB, EMPTY_TENANT);
+
+    expect(boot.dataset.monthlyRevenue).toHaveLength(6);
+    expect(boot.dataset.monthlyRevenue.every((entry) => entry.revenue === 0)).toBe(true);
   });
 
   it("scopes the route seam to the caller's session — no cross-tenant reads", async () => {

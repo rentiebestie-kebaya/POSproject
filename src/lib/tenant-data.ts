@@ -276,6 +276,14 @@ const str = (v: unknown): string => (v == null ? "" : String(v));
 const optStr = (v: unknown): string | undefined => (v == null ? undefined : String(v));
 const num = (v: unknown): number => Number(v ?? 0);
 const optNum = (v: unknown): number | undefined => (v == null ? undefined : Number(v));
+const MONTH_LABELS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+function emptyMonthlyRevenue(now = new Date()): TenantDataset["monthlyRevenue"] {
+  return Array.from({ length: 6 }, (_, index) => {
+    const month = new Date(now.getFullYear(), now.getMonth() - (5 - index), 1).getMonth();
+    return { month: MONTH_LABELS[month], revenue: 0 };
+  });
+}
 
 function parseJson<T>(v: unknown, fallback: T): T {
   if (typeof v !== "string" || v === "") return fallback;
@@ -955,6 +963,7 @@ export async function getTenantBootstrap(db: D1Database, tenantId: string): Prom
     month: str(r.month),
     revenue: num(r.revenue),
   }));
+  const safeMonthlyRevenue = monthlyRevenue.length > 0 ? monthlyRevenue : emptyMonthlyRevenue();
 
   const dataset: TenantDataset = {
     inventory,
@@ -962,7 +971,7 @@ export async function getTenantBootstrap(db: D1Database, tenantId: string): Prom
     bookingRequests,
     bookings,
     transactions,
-    monthlyRevenue,
+    monthlyRevenue: safeMonthlyRevenue,
   };
 
   return { tenant, team, dataset, financeSummary: buildFinanceSummary(transactions) };

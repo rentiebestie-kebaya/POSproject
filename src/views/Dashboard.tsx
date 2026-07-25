@@ -177,9 +177,12 @@ export default function Dashboard() {
     .filter((t) => t.paymentStatus !== "refunded")
     .reduce((a, t) => a + t.deposit, 0);
 
-  const thisMonth = monthlyRevenue[monthlyRevenue.length - 1];
-  const prevMonth = monthlyRevenue[monthlyRevenue.length - 2];
-  const revDeltaPct = prevMonth ? Math.round(((thisMonth.revenue - prevMonth.revenue) / prevMonth.revenue) * 100) : 0;
+  const revenueData = monthlyRevenue.length > 0 ? monthlyRevenue : [{ month: "This month", revenue: 0 }];
+  const thisMonth = revenueData[revenueData.length - 1];
+  const prevMonth = revenueData[revenueData.length - 2];
+  const revDeltaPct = prevMonth?.revenue
+    ? Math.round(((thisMonth.revenue - prevMonth.revenue) / prevMonth.revenue) * 100)
+    : null;
 
   const upcoming = bookings
     .filter((b) => b.status === "active" || b.status === "late")
@@ -196,7 +199,11 @@ export default function Dashboard() {
         <StatTile
           label="Revenue this month"
           value={formatIDR(thisMonth.revenue)}
-          delta={{ text: `${revDeltaPct >= 0 ? "+" : ""}${revDeltaPct}% vs ${prevMonth?.month}`, up: revDeltaPct >= 0 }}
+          delta={
+            revDeltaPct === null
+              ? undefined
+              : { text: `${revDeltaPct >= 0 ? "+" : ""}${revDeltaPct}% vs ${prevMonth.month}`, up: revDeltaPct >= 0 }
+          }
         />
         <StatTile label="Active rentals" value={String(activeCount)} />
         <StatTile label="Inventory utilization" value={`${utilization}%`} />
@@ -206,7 +213,7 @@ export default function Dashboard() {
       <div className="mt-4 grid gap-4 lg:grid-cols-3">
         <Card className="p-5 lg:col-span-2">
           <h2 className="mb-3 text-sm font-semibold">Revenue — last 6 months</h2>
-          <RevenueChart data={monthlyRevenue} />
+          <RevenueChart data={revenueData} />
         </Card>
         <Card className="p-5">
           <h2 className="mb-3 text-sm font-semibold">Inventory by status</h2>

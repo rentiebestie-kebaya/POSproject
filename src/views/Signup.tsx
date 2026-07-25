@@ -3,7 +3,17 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { AlertTriangle, ArrowLeft, ArrowRight, Building2, MapPin, Phone, UserRound } from "lucide-react";
+import {
+  AlertTriangle,
+  ArrowLeft,
+  ArrowRight,
+  Building2,
+  LockKeyhole,
+  Mail,
+  MapPin,
+  Phone,
+  UserRound,
+} from "lucide-react";
 import { useTenant } from "../data/store";
 import { PLAN_LABEL, type Plan } from "../data/mock";
 import { PLAN_RULES, limitText } from "../data/plans";
@@ -22,10 +32,12 @@ function slugify(value: string): string {
 }
 
 export default function Signup() {
-  const { createStore, isAuthenticated, platform, sessionReady } = useTenant();
+  const { isAuthenticated, refreshSession, sessionReady } = useTenant();
   const router = useRouter();
   const [storeName, setStoreName] = useState("");
   const [ownerName, setOwnerName] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [location, setLocation] = useState("");
   const [whatsapp, setWhatsapp] = useState("");
   const [plan, setPlan] = useState<Plan>("free");
@@ -37,40 +49,43 @@ export default function Signup() {
   }, [sessionReady, isAuthenticated, creating, router]);
 
   const generatedSlug = useMemo(() => {
-    const base = slugify(storeName);
-    if (!base) return "";
-    const slugExists = (value: string) =>
-      platform.tenants.some((tenant) => {
-        const existingSlug = tenant.subdomain.split(".")[0].toLowerCase();
-        return tenant.id === value || existingSlug === value;
-      });
-    if (!slugExists(base)) return base;
-    for (let i = 2; i < 100; i += 1) {
-      const next = `${base}-${i}`;
-      if (!slugExists(next)) return next;
-    }
-    return `${base}-${Date.now().toString(36).slice(-4)}`;
-  }, [platform.tenants, storeName]);
+    return slugify(storeName);
+  }, [storeName]);
   const canSubmit =
     storeName.trim().length > 1 &&
     ownerName.trim().length > 1 &&
+    email.trim().length > 3 &&
+    password.length >= 8 &&
     location.trim().length > 1 &&
     whatsapp.trim().length > 5 &&
     generatedSlug.length > 1;
 
-  const submit = (event: FormEvent) => {
+  const submit = async (event: FormEvent) => {
     event.preventDefault();
+    if (creating) return;
     setError("");
     setCreating(true);
     try {
-      createStore({
-        storeName,
-        ownerName,
-        location,
-        whatsapp,
-        bookingSlug: generatedSlug,
-        plan,
+      const response = await fetch("/api/signup", {
+        method: "POST",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          storeName,
+          ownerName,
+          email,
+          password,
+          location,
+          whatsapp,
+          bookingSlug: generatedSlug,
+          plan,
+        }),
       });
+
+      const payload = (await response.json().catch(() => null)) as { error?: string } | null;
+      if (!response.ok) throw new Error(payload?.error || "Could not create store.");
+
+      await refreshSession();
       router.replace("/onboarding");
     } catch (err) {
       setCreating(false);
@@ -152,6 +167,42 @@ export default function Signup() {
                   className={`${inputCls} pl-9`}
                   placeholder="Ayu Lestari"
                   autoComplete="name"
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className={labelCls} htmlFor="email">
+                Email owner
+              </label>
+              <div className="relative">
+                <Mail size={16} className="absolute left-3 top-3 text-ink-3" />
+                <input
+                  id="email"
+                  type="email"
+                  value={email}
+                  onChange={(event) => setEmail(event.target.value)}
+                  className={`${inputCls} pl-9`}
+                  placeholder="owner@butik.com"
+                  autoComplete="email"
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className={labelCls} htmlFor="password">
+                Password owner
+              </label>
+              <div className="relative">
+                <LockKeyhole size={16} className="absolute left-3 top-3 text-ink-3" />
+                <input
+                  id="password"
+                  type="password"
+                  value={password}
+                  onChange={(event) => setPassword(event.target.value)}
+                  className={`${inputCls} pl-9`}
+                  placeholder="Minimal 8 karakter"
+                  autoComplete="new-password"
                 />
               </div>
             </div>
