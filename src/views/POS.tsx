@@ -8,13 +8,13 @@ import {
   FileText,
   History,
   ImagePlus,
-  Minus,
   Plus,
   Printer,
   QrCode,
   Search,
   Shirt,
   Sparkles,
+  X,
 } from "lucide-react";
 import { Card, ItemStatusBadge, PageHeader, Th, Td } from "../components/Ui";
 import { useTenant, type TransactionReceipt } from "../data/store";
@@ -458,55 +458,6 @@ function rebuildReceipt(
   };
 }
 
-function ItemRow({
-  item,
-  selected,
-  disabled,
-  hint,
-  onClick,
-}: {
-  item: KebayaItem;
-  selected?: boolean;
-  disabled?: boolean;
-  hint?: string;
-  onClick: () => void;
-}) {
-  return (
-    <li className={disabled ? "opacity-60" : ""}>
-      <button
-        type="button"
-        onClick={onClick}
-        disabled={disabled}
-        className={`group flex w-full items-center gap-3 py-2.5 text-left transition-colors ${
-          disabled ? "cursor-not-allowed opacity-60" : "cursor-pointer hover:bg-brand-50/50"
-        }`}
-      >
-        <span
-          className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full border transition-colors ${
-            selected
-              ? "border-brand-900 bg-brand-900 text-white"
-              : "border-hairline bg-surface group-hover:border-brand-400"
-          }`}
-        >
-          {selected ? <Minus size={14} /> : <Plus size={14} />}
-        </span>
-        <Thumb item={item} />
-        <span className="min-w-0 flex-1">
-          <span className="block truncate text-sm font-medium">
-            {item.name} <span className="font-normal text-ink-3">· {item.qrCode} · size {item.sizeLabel}</span>
-          </span>
-          {hint && (
-            <span className="mt-0.5 flex items-center gap-1 text-xs text-critical">
-              <AlertTriangle size={12} /> {hint}
-            </span>
-          )}
-        </span>
-        <span className="w-24 text-right text-sm tabular-nums">{formatIDR(item.rentalPrice)}</span>
-      </button>
-    </li>
-  );
-}
-
 function SelectableKebayaCard({
   item,
   selected,
@@ -543,6 +494,81 @@ function SelectableKebayaCard({
       <div className="shrink-0 text-right">
         {right}
         <div className="mt-1 font-mono text-[11px] text-ink-3">{item.qrCode}</div>
+      </div>
+    </button>
+  );
+}
+
+function GridKebayaCard({
+  item,
+  selected,
+  blocked,
+  blockedHint,
+  onClick,
+}: {
+  item: KebayaItem;
+  selected: boolean;
+  blocked: boolean;
+  blockedHint?: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={blocked}
+      aria-pressed={selected}
+      className={`group relative flex flex-col overflow-hidden rounded-2xl border text-left transition-all ${
+        blocked
+          ? "cursor-not-allowed border-hairline bg-surface"
+          : selected
+            ? "border-brand-700 bg-brand-50 ring-2 ring-brand-300"
+            : "border-hairline bg-surface hover:border-brand-300 hover:shadow-[0_6px_20px_rgba(11,11,11,0.09)]"
+      }`}
+    >
+      <div className="relative aspect-[4/5] w-full overflow-hidden bg-brand-100">
+        {item.photos[0] ? (
+          <img
+            src={item.photos[0]}
+            alt=""
+            className={`h-full w-full object-cover transition-transform duration-300 ${
+              blocked ? "opacity-60" : "group-hover:scale-[1.03]"
+            }`}
+          />
+        ) : (
+          <div className="flex h-full w-full items-center justify-center text-2xl font-medium text-ink-3">KB</div>
+        )}
+
+        <span
+          className={`absolute right-2 top-2 flex h-7 w-7 items-center justify-center rounded-full border shadow-sm transition-colors ${
+            selected
+              ? "border-brand-900 bg-brand-900 text-white"
+              : "border-white/60 bg-black/25 text-white/0 backdrop-blur group-hover:text-white/85"
+          }`}
+        >
+          {selected ? <Check size={15} /> : <Plus size={15} />}
+        </span>
+
+        {!blocked && (
+          <span className="absolute bottom-2 left-2 rounded-full bg-black/55 px-2 py-0.5 text-[11px] font-semibold tabular-nums text-white backdrop-blur">
+            {formatIDR(item.rentalPrice)}
+          </span>
+        )}
+
+        {blocked && (
+          <div className="absolute inset-0 flex items-end bg-ink/45 p-2">
+            <span className="flex items-center gap-1 rounded-md bg-white/95 px-2 py-1 text-[11px] font-medium text-critical">
+              <AlertTriangle size={12} /> {blockedHint}
+            </span>
+          </div>
+        )}
+      </div>
+
+      <div className="min-w-0 p-2.5">
+        <div className="truncate text-sm font-semibold">{item.name}</div>
+        <div className="mt-0.5 truncate font-mono text-[11px] text-ink-3">
+          {item.qrCode} · size {item.sizeLabel}
+        </div>
       </div>
     </button>
   );
@@ -593,7 +619,7 @@ export default function POS() {
   const [historyType, setHistoryType] = useState<"all" | TransactionType>("all");
 
   const [pending, setPending] = useState<Mode | null>(null);
-  const [savingMode, setSavingMode] = useState<"open" | "close" | null>(null);
+  const [savingMode, setSavingMode] = useState<"open" | "close" | "clean" | null>(null);
   const [paymentConfirmed, setPaymentConfirmed] = useState(false);
   const [receipt, setReceipt] = useState<TransactionReceipt | null>(null);
   const [success, setSuccess] = useState("");
@@ -729,7 +755,7 @@ export default function POS() {
   const handleConfirm = async () => {
     if (!pending || savingMode) return;
     const action = pending;
-    if (action === "open" || action === "close") setSavingMode(action);
+    if (action === "open" || action === "close" || action === "clean") setSavingMode(action);
     try {
       if (action === "open") {
         const nextReceipt = await openTransaction({
@@ -783,7 +809,7 @@ export default function POS() {
       }
 
       if (action === "clean" && currentMaintenanceItemId) {
-        const item = completeCleaning({ itemId: currentMaintenanceItemId, notes: cleaningNotes });
+        const item = await completeCleaning({ itemId: currentMaintenanceItemId, notes: cleaningNotes });
         setMaintenanceItemId("");
         setCleaningNotes("");
         setSuccess(`${item.name} is now available.`);
@@ -857,10 +883,15 @@ export default function POS() {
       )}
 
       {mode === "open" && (
-        <div className="grid gap-4 xl:grid-cols-[minmax(340px,0.95fr)_minmax(360px,1fr)_minmax(300px,0.75fr)]">
+        <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(360px,400px)] xl:items-start">
           <Card className="p-5">
-            <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-              <h2 className="text-sm font-semibold">1 · Pick available kebaya item(s)</h2>
+            <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h2 className="text-sm font-semibold">1 · Pick available kebaya item(s)</h2>
+                <p className="mt-0.5 text-xs text-ink-3">
+                  {availableRows.length} available · {selectedItems.length} selected
+                </p>
+              </div>
               <div className="relative">
                 <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-ink-3" />
                 <input
@@ -872,30 +903,72 @@ export default function POS() {
               </div>
             </div>
 
-            <ul className="divide-y divide-hairline">
-              {availableRows.map(({ item, conflicts }) => {
-                const blocked = conflicts.length > 0;
-                return (
-                  <ItemRow
-                    key={item.id}
-                    item={item}
-                    selected={selectedIds.includes(item.id)}
-                    disabled={blocked}
-                    hint={
-                      blocked
-                        ? `Booked ${formatDate(conflicts[0].startDate)} - ${formatDate(conflicts[0].endDate)}`
-                        : undefined
-                    }
-                    onClick={() => toggleItem(item.id)}
-                  />
-                );
-              })}
-            </ul>
+            {availableRows.length === 0 ? (
+              <p className="rounded-xl bg-page p-8 text-center text-sm text-ink-2">
+                No available kebaya matches this search.
+              </p>
+            ) : (
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 2xl:grid-cols-4">
+                {availableRows.map(({ item, conflicts }) => {
+                  const blocked = conflicts.length > 0;
+                  return (
+                    <GridKebayaCard
+                      key={item.id}
+                      item={item}
+                      selected={selectedIds.includes(item.id)}
+                      blocked={blocked}
+                      blockedHint={
+                        blocked
+                          ? `Booked ${formatDate(conflicts[0].startDate)} - ${formatDate(conflicts[0].endDate)}`
+                          : undefined
+                      }
+                      onClick={() => toggleItem(item.id)}
+                    />
+                  );
+                })}
+              </div>
+            )}
           </Card>
 
-          <Card className="p-5">
+          <div className="flex flex-col gap-4">
+            <Card className="p-5">
+              <div className="mb-3 flex items-center justify-between gap-2">
+                <h2 className="text-sm font-semibold">Selected item(s)</h2>
+                <span className="rounded-full bg-brand-100 px-2 py-0.5 text-xs font-semibold text-brand-800 tabular-nums">
+                  {selectedItems.length}
+                </span>
+              </div>
+              {selectedItems.length === 0 ? (
+                <p className="rounded-lg bg-page p-3 text-sm text-ink-2">Tap a kebaya from the catalog to add it here.</p>
+              ) : (
+                <ul className="space-y-2">
+                  {selectedItems.map((item) => (
+                    <li key={item.id} className="flex items-center gap-3">
+                      <Thumb item={item} />
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate text-sm font-medium">{item.name}</div>
+                        <div className="truncate text-xs text-ink-3">
+                          {item.qrCode} · size {item.sizeLabel}
+                        </div>
+                      </div>
+                      <span className="shrink-0 text-sm tabular-nums">{formatIDR(item.rentalPrice)}</span>
+                      <button
+                        type="button"
+                        aria-label={`Remove ${item.name}`}
+                        onClick={() => toggleItem(item.id)}
+                        className="shrink-0 rounded-full p-1 text-ink-3 transition-colors hover:bg-black/5 hover:text-critical"
+                      >
+                        <X size={15} />
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </Card>
+
+            <Card className="p-5">
               <h2 className="mb-3 text-sm font-semibold">2 · Rental detail</h2>
-              <div className="grid gap-3 2xl:grid-cols-2">
+              <div className="grid gap-3">
                 <label>
                   <span className={labelCls}>Nama pelanggan *</span>
                   <input className={inputCls} value={customerName} onChange={(event) => setCustomerName(event.target.value)} />
@@ -904,22 +977,26 @@ export default function POS() {
                   <span className={labelCls}>Nomor WhatsApp *</span>
                   <input className={inputCls} value={whatsapp} onChange={(event) => setWhatsapp(event.target.value)} placeholder="+62" />
                 </label>
-                <label>
-                  <span className={labelCls}>Instagram</span>
-                  <input className={inputCls} value={instagram} onChange={(event) => setInstagram(event.target.value)} placeholder="@username" />
-                </label>
-                <label>
-                  <span className={labelCls}>Email</span>
-                  <input type="email" className={inputCls} value={email} onChange={(event) => setEmail(event.target.value)} />
-                </label>
-                <label>
-                  <span className={labelCls}>Tanggal sewa</span>
-                  <input type="date" className={inputCls} value={startDate} onChange={(event) => setStartDate(event.target.value)} />
-                </label>
-                <label>
-                  <span className={labelCls}>Tanggal pengembalian</span>
-                  <input type="date" className={inputCls} value={endDate} onChange={(event) => setEndDate(event.target.value)} />
-                </label>
+                <div className="grid grid-cols-2 gap-3">
+                  <label>
+                    <span className={labelCls}>Instagram</span>
+                    <input className={inputCls} value={instagram} onChange={(event) => setInstagram(event.target.value)} placeholder="@username" />
+                  </label>
+                  <label>
+                    <span className={labelCls}>Email</span>
+                    <input type="email" className={inputCls} value={email} onChange={(event) => setEmail(event.target.value)} />
+                  </label>
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <label>
+                    <span className={labelCls}>Tanggal sewa</span>
+                    <input type="date" className={inputCls} value={startDate} onChange={(event) => setStartDate(event.target.value)} />
+                  </label>
+                  <label>
+                    <span className={labelCls}>Tanggal pengembalian</span>
+                    <input type="date" className={inputCls} value={endDate} onChange={(event) => setEndDate(event.target.value)} />
+                  </label>
+                </div>
                 <label>
                   <span className={labelCls}>Value jaminan</span>
                   <input
@@ -937,9 +1014,9 @@ export default function POS() {
                 </div>
               </div>
 
-              <div className="mt-3 grid gap-3 2xl:grid-cols-2">
+              <div className="mt-3 grid grid-cols-2 gap-3">
                 <label className="flex cursor-pointer items-center gap-2 rounded-lg border border-dashed border-hairline px-3 py-3 text-sm text-ink-2 hover:border-brand-400">
-                  <ImagePlus size={16} />
+                  <ImagePlus size={16} className="shrink-0" />
                   <span className="min-w-0 flex-1 truncate">{idPhotoName || "Upload ID photo"}</span>
                   <input
                     type="file"
@@ -949,7 +1026,7 @@ export default function POS() {
                   />
                 </label>
                 <label className="flex cursor-pointer items-center gap-2 rounded-lg border border-dashed border-hairline px-3 py-3 text-sm text-ink-2 hover:border-brand-400">
-                  <ImagePlus size={16} />
+                  <ImagePlus size={16} className="shrink-0" />
                   <span className="min-w-0 flex-1 truncate">{clientPhotoName || "Upload client photo"}</span>
                   <input
                     type="file"
@@ -969,29 +1046,11 @@ export default function POS() {
                   placeholder="Alteration request, pickup note, damage before rental..."
                 />
               </label>
-          </Card>
+            </Card>
 
-          <Card className="p-5">
+            <Card className="p-5">
               <h2 className="mb-3 text-sm font-semibold">3 · Transaction summary</h2>
-              {selectedItems.length === 0 ? (
-                <p className="rounded-lg bg-page p-3 text-sm text-ink-2">No kebaya selected yet.</p>
-              ) : (
-                <ul className="mb-3 divide-y divide-hairline rounded-xl border border-hairline">
-                  {selectedItems.map((item) => (
-                    <li key={item.id} className="flex items-center gap-4 p-3 text-sm">
-                      <Thumb item={item} size="large" />
-                      <div className="min-w-0 flex-1">
-                        <div className="truncate font-medium">{item.name}</div>
-                        <div className="mt-0.5 truncate text-xs text-ink-3">
-                          {item.qrCode} · size {item.sizeLabel}
-                        </div>
-                      </div>
-                      <span className="shrink-0 tabular-nums">{formatIDR(item.rentalPrice)}</span>
-                    </li>
-                  ))}
-                </ul>
-              )}
-              <div className="space-y-1.5 border-t border-hairline pt-3 text-sm">
+              <div className="space-y-1.5 text-sm">
                 <div className="flex justify-between text-ink-2">
                   <span>Base rent ({BASE_RENT_DAYS} days)</span>
                   <span className="tabular-nums">{formatIDR(baseRental)}</span>
@@ -1032,7 +1091,8 @@ export default function POS() {
               >
                 {savingMode === "open" ? "Creating..." : "Create Transaction"}
               </button>
-          </Card>
+            </Card>
+          </div>
         </div>
       )}
 
@@ -1318,14 +1378,14 @@ export default function POS() {
               </label>
               <button
                 type="button"
-                disabled={!currentMaintenanceItemId}
+                disabled={!currentMaintenanceItemId || savingMode === "clean"}
                 onClick={() => {
                   resetMessages();
                   setPending("clean");
                 }}
                 className="mt-4 w-full rounded-full bg-brand-900 py-2.5 text-sm font-semibold text-white hover:bg-brand-800 disabled:cursor-not-allowed disabled:bg-brand-200"
               >
-                Tandai Selesai Cuci
+                {savingMode === "clean" ? "Saving..." : "Tandai Selesai Cuci"}
               </button>
             </Card>
           </div>
@@ -1473,8 +1533,11 @@ export default function POS() {
       {pending === "clean" && currentMaintenanceItem && (
         <ConfirmModal
           title="Mark item available?"
-          confirmLabel="Tandai Selesai Cuci"
-          onCancel={() => setPending(null)}
+          confirmLabel={savingMode === "clean" ? "Saving..." : "Tandai Selesai Cuci"}
+          busy={savingMode === "clean"}
+          onCancel={() => {
+            if (!savingMode) setPending(null);
+          }}
           onConfirm={handleConfirm}
         >
           <p>{currentMaintenanceItem.name} will become available for the next rental.</p>

@@ -144,6 +144,25 @@ interface PosCloseFields extends PosCloseInput {
   returnDisposition: "available" | "maintenance";
 }
 
+export interface CheckoutReservationInput {
+  bookingId: string;
+  method: PaymentMethod;
+  notes?: string;
+  evidence?: {
+    idPhotoName?: string;
+    clientPhotoName?: string;
+  };
+}
+
+interface CheckoutReservationFields extends CheckoutReservationInput {
+  evidence?: PosOpenInput["evidence"];
+}
+
+export interface CleaningCompleteInput {
+  itemId: string;
+  notes?: string;
+}
+
 export interface ReservationInput {
   itemIds: string[];
   customerName: string;
@@ -545,6 +564,24 @@ function posCloseFields(input: unknown): PosCloseFields {
   };
 }
 
+function checkoutReservationFields(input: unknown): CheckoutReservationFields {
+  const row = record(input);
+  return {
+    bookingId: requiredText(row, "bookingId", "Booking"),
+    method: paymentMethod(row.method),
+    notes: optionalNonEmpty(row, "notes"),
+    evidence: evidence(row.evidence),
+  };
+}
+
+function cleaningCompleteFields(input: unknown): CleaningCompleteInput {
+  const row = record(input);
+  return {
+    itemId: requiredText(row, "itemId", "Inventory item"),
+    notes: optionalNonEmpty(row, "notes"),
+  };
+}
+
 function reservationFields(input: unknown): ReservationFields {
   const row = record(input);
   const startDate = requiredText(row, "startDate", "Start date");
@@ -668,6 +705,23 @@ function posCloseActionError(error: unknown): InventoryActionError {
     return new InventoryActionError(409, "Return could not be recorded.");
   }
   return new InventoryActionError(500, "Return could not be recorded.");
+}
+
+function reservationCheckoutActionError(error: unknown): InventoryActionError {
+  if (error instanceof InventoryActionError) return error;
+  const message = error instanceof Error ? error.message : String(error);
+  if (message.includes("FOREIGN KEY constraint failed")) {
+    return new InventoryActionError(409, "Only due confirmed reservations can be checked out.");
+  }
+  if (message.includes("UNIQUE constraint failed")) {
+    return new InventoryActionError(409, "Reservation could not be checked out.");
+  }
+  return new InventoryActionError(500, "Reservation could not be checked out.");
+}
+
+function cleaningCompleteActionError(error: unknown): InventoryActionError {
+  if (error instanceof InventoryActionError) return error;
+  return new InventoryActionError(500, "Cleaning status could not be updated.");
 }
 
 function reservationActionError(error: unknown): InventoryActionError {
@@ -2418,6 +2472,249 @@ export async function handlePosCloseRequest(
     return Response.json({ receipt });
   } catch (error) {
     const mapped = posCloseActionError(error);
+    return jsonError(mapped.message, mapped.status);
+  }
+}
+
+export async function checkoutReservation(
+  db: D1Database,
+  session: PosActionSession,
+  input: unknown,
+): Promise<TenantActionReceipt> {
+  const fields = checkoutReservationFields(input);
+  const transactionId = generateReadableId("T");
+  const transactionDate = todayIsoDate();
+  const evidenceJson = JSON.stringify(fields.evidence ?? {});
+
+  try {
+    const results = await db.batch<Row>([
+      db
+        .prepare(
+          `INSERT INTO transactions
+            (id, tenant_id, booking_id, transaction_type, date, deposit, late_fee, damage_fee,
+             total, method, payment_status, customer_name, customer_whatsapp, cashier_name,
+             rental_total, base_rental, extra_day_fee, notes, evidence_json)
+           SELECT ?, b.tenant_id, b.id, 'open', ?, b.deposit, 0, 0,
+             b.total + b.deposit, ?, 'paid', c.name, c.whatsapp, ?,
+             b.total, b.total, 0, ?, ?
+           FROM bookings b
+           JOIN customers c ON c.id = b.customer_id AND c.tenant_id = b.tenant_id
+           WHERE b.id = ? AND b.tenant_id = ? AND b.status = 'confirmed' AND b.start_date <= ?
+             AND (
+               SELECT COUNT(*)
+               FROM booking_items bi
+               JOIN inventory_items i ON i.id = bi.item_id AND i.tenant_id = bi.tenant_id
+               WHERE bi.booking_id = b.id AND bi.tenant_id = b.tenant_id AND i.status = 'available'
+             ) = (
+               SELECT COUNT(*)
+               FROM booking_items bi
+               WHERE bi.booking_id = b.id AND bi.tenant_id = b.tenant_id
+             )
+             AND (
+               SELECT COUNT(*)
+               FROM booking_items bi
+               WHERE bi.booking_id = b.id AND bi.tenant_id = b.tenant_id
+             ) > 0`,
+        )
+        .bind(
+          transactionId,
+          transactionDate,
+          fields.method,
+          session.name,
+          fields.notes ?? null,
+          evidenceJson,
+          fields.bookingId,
+          session.tenantId,
+          transactionDate,
+        ),
+      db
+        .prepare(
+          `INSERT INTO transaction_items (transaction_id, item_id, tenant_id)
+           SELECT t.id, bi.item_id, bi.tenant_id
+           FROM transactions t
+           JOIN booking_items bi ON bi.booking_id = t.booking_id AND bi.tenant_id = t.tenant_id
+           WHERE t.id = ? AND t.tenant_id = ?`,
+        )
+        .bind(transactionId, session.tenantId),
+      db
+        .prepare(
+          `UPDATE bookings
+           SET status = 'active',
+               updated_at = CURRENT_TIMESTAMP
+           WHERE id = ? AND tenant_id = ? AND status = 'confirmed'
+             AND EXISTS (
+               SELECT 1
+               FROM transactions t
+               WHERE t.id = ? AND t.booking_id = bookings.id AND t.tenant_id = bookings.tenant_id
+             )`,
+        )
+        .bind(fields.bookingId, session.tenantId, transactionId),
+      db
+        .prepare(
+          `UPDATE customers
+           SET total_rentals = total_rentals + 1,
+               last_rental = (
+                 SELECT b.start_date FROM bookings b WHERE b.id = ? AND b.tenant_id = ?
+               ),
+               updated_at = CURRENT_TIMESTAMP
+           WHERE tenant_id = ?
+             AND id = (
+               SELECT b.customer_id FROM bookings b WHERE b.id = ? AND b.tenant_id = ?
+             )
+             AND EXISTS (
+               SELECT 1 FROM transactions t WHERE t.id = ? AND t.tenant_id = ?
+             )`,
+        )
+        .bind(
+          fields.bookingId,
+          session.tenantId,
+          session.tenantId,
+          fields.bookingId,
+          session.tenantId,
+          transactionId,
+          session.tenantId,
+        ),
+      db
+        .prepare(
+          `UPDATE inventory_items
+           SET status = 'rented',
+               times_rented = times_rented + 1,
+               updated_at = CURRENT_TIMESTAMP
+           WHERE tenant_id = ? AND status = 'available'
+             AND id IN (
+               SELECT ti.item_id
+               FROM transaction_items ti
+               WHERE ti.transaction_id = ? AND ti.tenant_id = ?
+             )`,
+        )
+        .bind(session.tenantId, transactionId, session.tenantId),
+      db.prepare(`SELECT * FROM tenants WHERE id = ?`).bind(session.tenantId),
+      db
+        .prepare(
+          `SELECT c.*
+           FROM customers c
+           JOIN bookings b ON b.customer_id = c.id AND b.tenant_id = c.tenant_id
+           WHERE b.id = ? AND b.tenant_id = ?`,
+        )
+        .bind(fields.bookingId, session.tenantId),
+      db.prepare(`SELECT * FROM bookings WHERE id = ? AND tenant_id = ?`).bind(fields.bookingId, session.tenantId),
+      db
+        .prepare(`SELECT booking_id, item_id FROM booking_items WHERE booking_id = ? AND tenant_id = ? ORDER BY rowid`)
+        .bind(fields.bookingId, session.tenantId),
+      db.prepare(`SELECT * FROM transactions WHERE id = ? AND tenant_id = ?`).bind(transactionId, session.tenantId),
+      db
+        .prepare(`SELECT transaction_id, item_id FROM transaction_items WHERE transaction_id = ? ORDER BY rowid`)
+        .bind(transactionId),
+      db
+        .prepare(
+          `SELECT i.*
+           FROM inventory_items i
+           JOIN booking_items bi ON bi.item_id = i.id AND bi.tenant_id = i.tenant_id
+           WHERE bi.booking_id = ? AND bi.tenant_id = ?
+           ORDER BY bi.rowid`,
+        )
+        .bind(fields.bookingId, session.tenantId),
+    ] satisfies D1PreparedStatement[]);
+
+    const tenantRow = results[5].results[0];
+    const customerRow = results[6].results[0];
+    const bookingRow = results[7].results[0];
+    const bookingItemRows = results[8].results;
+    const transactionRow = results[9].results[0];
+    const transactionItemRows = results[10].results;
+    const itemRows = results[11].results;
+
+    if (!tenantRow || !customerRow || !bookingRow || !transactionRow || itemRows.length === 0) {
+      throw new InventoryActionError(409, "Only due confirmed reservations can be checked out.");
+    }
+
+    const bookingItemIds = bookingItemRows.map((row) => str(row.item_id));
+    const transactionItemIds = transactionItemRows.map((row) => str(row.item_id));
+    const items = itemRows.map(toItem);
+    if (
+      str(bookingRow.status) !== "active" ||
+      bookingItemIds.length !== transactionItemIds.length ||
+      items.length !== bookingItemIds.length ||
+      items.some((item) => item.status !== "rented")
+    ) {
+      throw new InventoryActionError(409, "Only due confirmed reservations can be checked out.");
+    }
+
+    return {
+      tenant: toTenant(tenantRow),
+      customer: toCustomer(customerRow, []),
+      booking: toBooking(bookingRow, bookingItemIds),
+      transaction: toTransaction(transactionRow, transactionItemIds),
+      items,
+      cashierName: session.name,
+      financeSummary: await getTenantFinanceSummary(db, session.tenantId),
+    };
+  } catch (error) {
+    throw reservationCheckoutActionError(error);
+  }
+}
+
+export async function handleReservationCheckoutRequest(
+  request: Request,
+  session: PosActionSession | null,
+  db: D1Database,
+): Promise<Response> {
+  if (!session) return jsonError("Unauthorized", 401);
+  if (!canWritePosTransaction(session)) return jsonError("Only owner and cashier users can check out reservations.", 403);
+  try {
+    const receipt = await checkoutReservation(db, session, await request.json());
+    return Response.json({ receipt });
+  } catch (error) {
+    const mapped = reservationCheckoutActionError(error);
+    return jsonError(mapped.message, mapped.status);
+  }
+}
+
+export async function completeInventoryCleaning(
+  db: D1Database,
+  session: PosActionSession,
+  input: unknown,
+): Promise<KebayaItem> {
+  const fields = cleaningCompleteFields(input);
+
+  try {
+    const [before, , readBack] = await db.batch<Row>([
+      db.prepare(`SELECT * FROM inventory_items WHERE id = ? AND tenant_id = ?`).bind(fields.itemId, session.tenantId),
+      db
+        .prepare(
+          `UPDATE inventory_items
+           SET status = 'available',
+               updated_at = CURRENT_TIMESTAMP
+           WHERE id = ? AND tenant_id = ? AND status = 'maintenance'`,
+        )
+        .bind(fields.itemId, session.tenantId),
+      db.prepare(`SELECT * FROM inventory_items WHERE id = ? AND tenant_id = ?`).bind(fields.itemId, session.tenantId),
+    ]);
+
+    void fields.notes;
+    const beforeRow = before.results[0];
+    const row = readBack.results[0];
+    if (!beforeRow || str(beforeRow.status) !== "maintenance" || !row || str(row.status) !== "available") {
+      throw new InventoryActionError(409, "Only cleaning or maintenance items can be marked available.");
+    }
+    return toItem(row);
+  } catch (error) {
+    throw cleaningCompleteActionError(error);
+  }
+}
+
+export async function handleCleaningCompleteRequest(
+  request: Request,
+  session: PosActionSession | null,
+  db: D1Database,
+): Promise<Response> {
+  if (!session) return jsonError("Unauthorized", 401);
+  if (!canWritePosTransaction(session)) return jsonError("Only owner and cashier users can release cleaned items.", 403);
+  try {
+    const item = await completeInventoryCleaning(db, session, await request.json());
+    return Response.json({ item });
+  } catch (error) {
+    const mapped = cleaningCompleteActionError(error);
     return jsonError(mapped.message, mapped.status);
   }
 }

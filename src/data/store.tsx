@@ -70,6 +70,14 @@ interface PosCloseActionResponse {
   receipt: TransactionReceipt;
 }
 
+interface CheckoutReservationActionResponse {
+  receipt: TransactionReceipt;
+}
+
+interface CleaningCompleteActionResponse {
+  item: KebayaItem;
+}
+
 export interface ReservationReceipt {
   tenant: Tenant;
   booking: Booking;
@@ -308,10 +316,10 @@ interface TenantContextValue {
   createPublicBookingRequest: (input: CreatePublicBookingRequestInput) => Promise<BookingRequest>;
   approveBookingRequest: (input: ApproveBookingRequestInput) => Promise<Booking>;
   rejectBookingRequest: (input: RejectBookingRequestInput) => Promise<BookingRequest>;
-  checkoutReservation: (input: CheckoutReservationInput) => TransactionReceipt;
+  checkoutReservation: (input: CheckoutReservationInput) => Promise<TransactionReceipt>;
   openTransaction: (input: OpenTransactionInput) => Promise<TransactionReceipt>;
   closeTransaction: (input: ReturnTransactionInput) => Promise<TransactionReceipt>;
-  completeCleaning: (input: CleaningCompleteInput) => KebayaItem;
+  completeCleaning: (input: CleaningCompleteInput) => Promise<KebayaItem>;
   provisionStaff: (input: StaffProvisionInput) => Promise<User>;
   setStaffAccess: (input: StaffAccessInput) => Promise<User>;
   changeOwnPassword: (input: AccountPasswordInput) => Promise<void>;
@@ -410,6 +418,40 @@ async function postPosCloseAction(body: ReturnTransactionInput): Promise<Transac
     throw new Error("Return could not be recorded.");
   }
   return payload.receipt;
+}
+
+async function postReservationCheckoutAction(body: CheckoutReservationInput): Promise<TransactionReceipt> {
+  const res = await fetch("/api/bookings/checkout", {
+    method: "POST",
+    credentials: "include",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const payload = await res.json().catch(() => null) as Partial<CheckoutReservationActionResponse> & { error?: string } | null;
+  if (!res.ok) {
+    throw new Error(payload?.error || "Reservation could not be checked out.");
+  }
+  if (!payload?.receipt) {
+    throw new Error("Reservation could not be checked out.");
+  }
+  return payload.receipt;
+}
+
+async function postCleaningCompleteAction(body: CleaningCompleteInput): Promise<KebayaItem> {
+  const res = await fetch("/api/inventory/cleaning-complete", {
+    method: "POST",
+    credentials: "include",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const payload = await res.json().catch(() => null) as Partial<CleaningCompleteActionResponse> & { error?: string } | null;
+  if (!res.ok) {
+    throw new Error(payload?.error || "Cleaning status could not be updated.");
+  }
+  if (!payload?.item) {
+    throw new Error("Cleaning status could not be updated.");
+  }
+  return payload.item;
 }
 
 async function postReservationAction(body: CreateReservationInput): Promise<ReservationReceipt> {
@@ -1442,7 +1484,42 @@ export function TenantProvider({ children }: { children: ReactNode }) {
   );
 
   const checkoutReservation = useCallback(
-    (input: CheckoutReservationInput): TransactionReceipt => {
+    async (input: CheckoutReservationInput): Promise<TransactionReceipt> => {
+      if (realUser) {
+        const receipt = await postReservationCheckoutAction(input);
+        if (receipt.financeSummary) {
+          setServerFinanceSummaryByTenant((prev) => ({ ...prev, [receipt.tenant.id]: receipt.financeSummary! }));
+        }
+        setData((prev) => {
+          const current = prev[receipt.tenant.id] ?? emptyDataset();
+          const receiptItems = new Map(receipt.items.map((item) => [item.id, item]));
+          const currentItemIds = new Set(current.inventory.map((item) => item.id));
+          const hasCustomer = current.customers.some((row) => row.id === receipt.customer.id);
+          const hasBooking = current.bookings.some((row) => row.id === receipt.booking.id);
+          return {
+            ...prev,
+            [receipt.tenant.id]: {
+              ...current,
+              inventory: [
+                ...current.inventory.map((item) => receiptItems.get(item.id) ?? item),
+                ...receipt.items.filter((item) => !currentItemIds.has(item.id)),
+              ],
+              customers: hasCustomer
+                ? current.customers.map((row) => (row.id === receipt.customer.id ? receipt.customer : row))
+                : [receipt.customer, ...current.customers],
+              bookings: hasBooking
+                ? current.bookings.map((row) => (row.id === receipt.booking.id ? receipt.booking : row))
+                : [receipt.booking, ...current.bookings],
+              transactions: [
+                receipt.transaction,
+                ...current.transactions.filter((row) => row.id !== receipt.transaction.id),
+              ],
+            },
+          };
+        });
+        return receipt;
+      }
+
       const tenant = tenantList.find((t) => t.id === tenantId)!;
       const user = currentUser ?? ownerOf(userList, tenantId);
       const ds = data[tenantId];
@@ -1506,7 +1583,7 @@ export function TenantProvider({ children }: { children: ReactNode }) {
 
       return receipt;
     },
-    [data, tenantId, currentUser, userList, tenantList],
+    [data, tenantId, currentUser, userList, tenantList, realUser],
   );
 
   const closeTransaction = useCallback(
@@ -1600,7 +1677,24 @@ export function TenantProvider({ children }: { children: ReactNode }) {
   );
 
   const completeCleaning = useCallback(
-    (input: CleaningCompleteInput): KebayaItem => {
+    async (input: CleaningCompleteInput): Promise<KebayaItem> => {
+      if (realUser) {
+        const completed = await postCleaningCompleteAction(input);
+        setData((prev) => {
+          const current = prev[completed.tenantId] ?? emptyDataset();
+          const currentItemIds = new Set(current.inventory.map((item) => item.id));
+          return {
+            ...prev,
+            [completed.tenantId]: {
+              ...current,
+              inventory: currentItemIds.has(completed.id)
+                ? current.inventory.map((row) => (row.id === completed.id ? completed : row))
+                : [completed, ...current.inventory],
+            },
+          };
+        });
+        return completed;
+      }
       const ds = data[tenantId];
       const item = ds.inventory.find((row) => row.id === input.itemId);
       if (!item || item.status !== "maintenance") {
@@ -1617,7 +1711,7 @@ export function TenantProvider({ children }: { children: ReactNode }) {
       void input.notes;
       return completed;
     },
-    [data, tenantId],
+    [data, tenantId, realUser],
   );
 
   const value = useMemo<TenantContextValue>(() => {

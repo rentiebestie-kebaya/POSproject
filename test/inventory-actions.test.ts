@@ -3,8 +3,10 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { createAuth } from "../src/lib/auth";
 import {
   addInventoryItem,
+  completeInventoryCleaning,
   editInventoryItem,
   getTenantBootstrap,
+  handleCleaningCompleteRequest,
   handleInventoryAddRequest,
   handleInventoryEditRequest,
 } from "../src/lib/tenant-data";
@@ -224,5 +226,72 @@ describe("inventory write actions", () => {
     expect(res.status).toBe(403);
     const boot = await getTenantBootstrap(env.DB, DEMO_TENANT_ID);
     expect(boot.dataset.inventory.some((row) => row.inventoryCode === "CASHIER-ADD")).toBe(false);
+  });
+
+  it("marks a maintenance item available through the server action", async () => {
+    const maintenance = demoSource.dataset.inventory.find((item) => item.status === "maintenance")!;
+
+    const item = await completeInventoryCleaning(env.DB, appSession(DEMO_TENANT_ID, "cashier"), {
+      itemId: maintenance.id,
+      notes: "Laundry complete",
+    });
+
+    expect(item).toMatchObject({
+      id: maintenance.id,
+      tenantId: DEMO_TENANT_ID,
+      status: "available",
+      timesRented: maintenance.timesRented,
+    });
+
+    const boot = await getTenantBootstrap(env.DB, DEMO_TENANT_ID);
+    expect(boot.dataset.inventory.find((row) => row.id === maintenance.id)?.status).toBe("available");
+  });
+
+  it("does not mark available items as cleaning-complete", async () => {
+    const available = demoSource.dataset.inventory.find((item) => item.status === "available")!;
+
+    await expect(
+      completeInventoryCleaning(env.DB, appSession(DEMO_TENANT_ID, "cashier"), { itemId: available.id }),
+    ).rejects.toThrow("Only cleaning or maintenance items can be marked available.");
+
+    const boot = await getTenantBootstrap(env.DB, DEMO_TENANT_ID);
+    expect(boot.dataset.inventory.find((row) => row.id === available.id)?.status).toBe("available");
+  });
+
+  it("releases cleaned inventory through the route handler for owner and cashier, and rejects fitting", async () => {
+    const maintenanceItems = demoSource.dataset.inventory.filter((item) => item.status === "maintenance");
+    const cashierRes = await handleCleaningCompleteRequest(
+      new Request("http://localhost/api/inventory/cleaning-complete", {
+        method: "POST",
+        body: JSON.stringify({ itemId: maintenanceItems[0].id }),
+      }),
+      appSession(DEMO_TENANT_ID, "cashier"),
+      env.DB,
+    );
+    expect(cashierRes.status).toBe(200);
+    const cashierBody = (await cashierRes.json()) as { item: KebayaItem };
+    expect(cashierBody.item.status).toBe("available");
+
+    const ownerRes = await handleCleaningCompleteRequest(
+      new Request("http://localhost/api/inventory/cleaning-complete", {
+        method: "POST",
+        body: JSON.stringify({ itemId: maintenanceItems[1].id }),
+      }),
+      appSession(DEMO_TENANT_ID, "owner"),
+      env.DB,
+    );
+    expect(ownerRes.status).toBe(200);
+
+    const fittingRes = await handleCleaningCompleteRequest(
+      new Request("http://localhost/api/inventory/cleaning-complete", {
+        method: "POST",
+        body: JSON.stringify({ itemId: maintenanceItems[2].id }),
+      }),
+      appSession(DEMO_TENANT_ID, "fitting"),
+      env.DB,
+    );
+    expect(fittingRes.status).toBe(403);
+    const boot = await getTenantBootstrap(env.DB, DEMO_TENANT_ID);
+    expect(boot.dataset.inventory.find((row) => row.id === maintenanceItems[2].id)?.status).toBe("maintenance");
   });
 });
