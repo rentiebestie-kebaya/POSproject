@@ -17,6 +17,7 @@ import {
 import { useTenant } from "../data/store";
 import { PLAN_LABEL, type Plan } from "../data/mock";
 import { PLAN_RULES, limitText } from "../data/plans";
+import { shopProfileIsValid } from "@/lib/shop-profile";
 
 const inputCls =
   "w-full rounded-xl border border-black/10 bg-white px-3 py-2.5 text-sm outline-none focus:border-brand-400";
@@ -52,12 +53,10 @@ export default function Signup() {
     return slugify(storeName);
   }, [storeName]);
   const canSubmit =
-    storeName.trim().length > 1 &&
+    shopProfileIsValid({ name: storeName, location, whatsapp }) &&
     ownerName.trim().length > 1 &&
     email.trim().length > 3 &&
     password.length >= 8 &&
-    location.trim().length > 1 &&
-    whatsapp.trim().length > 5 &&
     generatedSlug.length > 1;
 
   const submit = async (event: FormEvent) => {

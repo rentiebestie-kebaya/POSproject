@@ -1,8 +1,10 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import {
-  AlertTriangle,
+  AlertTriangle, ArrowLeft,
   QrCode, Search, Plus, X, Ruler, Tag, Wallet, Sparkles,
   LayoutGrid, List as ListIcon, Camera, ImagePlus, Trash2, Check, Pencil,
 } from "lucide-react";
@@ -647,6 +649,8 @@ function ItemTable({ rows, onOpen }: { rows: KebayaItem[]; onOpen: (id: string) 
 
 export default function Inventory() {
   const { tenant, inventory: items, planRules, addItem, editItem, user } = useTenant();
+  const searchParams = useSearchParams();
+  const setupReturn = searchParams.get("setup") === "1";
   const canEdit = canEditInventory(user.role);
   const [view, setView] = useState<"grid" | "list">("grid");
   const [status, setStatus] = useState<(typeof STATUS_FILTERS)[number]>("all");
@@ -712,6 +716,15 @@ export default function Inventory() {
           </>
         }
       />
+
+      {setupReturn && (
+        <Link
+          href="/onboarding?step=inventory"
+          className="mb-4 inline-flex items-center gap-2 rounded-lg border border-brand-200 bg-brand-50 px-3 py-2 text-sm font-semibold text-brand-800 hover:bg-brand-100"
+        >
+          <ArrowLeft size={15} /> Back to setup
+        </Link>
+      )}
 
       {error && (
         <div className="mb-4 flex items-start gap-2 rounded-xl border border-critical/20 bg-critical/5 px-3 py-2.5 text-sm text-critical">

@@ -32,6 +32,7 @@ import { rulesForTenant } from "./plans";
 import { buildFinanceSummary, type FinanceSummary } from "./finance";
 import { authClient } from "@/lib/auth-client";
 import { normalizePhone } from "@/lib/phone";
+import { validateShopLocation, validateShopName, validateShopWhatsapp } from "@/lib/shop-profile";
 
 /** The signed-in identity as resolved server-side from the real better-auth
     session (via /api/me). tenant_id + role come off the validated session. */
@@ -113,6 +114,10 @@ interface PublicBookingRequestResponse {
 interface StaffProvisionActionResponse {
   user: User;
   team: User[];
+}
+
+interface TenantProfileActionResponse {
+  tenant: Tenant;
 }
 
 export type InventoryItemDraft = Omit<KebayaItem, "id" | "tenantId" | "dateAdded">;
@@ -242,6 +247,13 @@ export interface MeasurementInput {
   hip: number;
 }
 
+export interface TenantProfileInput {
+  name?: string;
+  location?: string;
+  whatsapp?: string;
+  onboardingStatus?: OnboardingStatus;
+}
+
 export interface CreateStoreInput {
   storeName: string;
   ownerName: string;
@@ -325,6 +337,7 @@ interface TenantContextValue {
   changeOwnPassword: (input: AccountPasswordInput) => Promise<void>;
   recordMeasurement: (input: MeasurementInput) => Promise<Customer>;
   resetStaffPassword: (input: StaffPasswordInput) => Promise<User>;
+  updateTenantProfile: (input: TenantProfileInput) => Promise<Tenant>;
 
   itemById: (id: string) => KebayaItem;
   customerById: (id: string) => Customer;
@@ -559,6 +572,35 @@ async function postStaffProvisionAction(body: StaffProvisionInput): Promise<Staf
     throw new Error("Staff account could not be created.");
   }
   return { user: payload.user, team: payload.team };
+}
+
+async function patchTenantProfileAction(body: TenantProfileInput): Promise<Tenant> {
+  const res = await fetch("/api/tenant/profile", {
+    method: "PATCH",
+    credentials: "include",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const payload = await res.json().catch(() => null) as Partial<TenantProfileActionResponse> & { error?: string } | null;
+  if (!res.ok) {
+    throw new Error(payload?.error || "Shop profile could not be saved.");
+  }
+  if (!payload?.tenant) {
+    throw new Error("Shop profile could not be saved.");
+  }
+  return payload.tenant;
+}
+
+function applyTenantProfilePatch(tenant: Tenant, input: TenantProfileInput): Tenant {
+  const next: Tenant = { ...tenant };
+  if (input.name !== undefined) next.name = validateShopName(input.name);
+  if (input.location !== undefined) next.location = validateShopLocation(input.location);
+  if (input.whatsapp !== undefined) next.whatsapp = validateShopWhatsapp(input.whatsapp);
+  if (input.onboardingStatus !== undefined) {
+    if (input.onboardingStatus !== "complete") throw new Error("Onboarding status can only be marked complete.");
+    next.onboardingStatus = input.onboardingStatus;
+  }
+  return next;
 }
 
 // A minimal workspace for a real signed-in owner whose tenant isn't in the
@@ -898,6 +940,23 @@ export function TenantProvider({ children }: { children: ReactNode }) {
       return updated.user;
     },
     [currentUser, realUser],
+  );
+
+  const updateTenantProfile = useCallback(
+    async (input: TenantProfileInput): Promise<Tenant> => {
+      if (currentUser?.role !== "owner") throw new Error("Only owners can edit the shop profile.");
+      if (realUser) {
+        const tenant = await patchTenantProfileAction(input);
+        setRealTenant(tenant);
+        return tenant;
+      }
+
+      const current = tenantList.find((row) => row.id === tenantId) ?? synthTenant(tenantId);
+      const updated = applyTenantProfilePatch(current, input);
+      setTenantList((prev) => prev.map((tenant) => (tenant.id === tenantId ? updated : tenant)));
+      return updated;
+    },
+    [currentUser, realUser, tenantId, tenantList],
   );
 
   const buildStore = useCallback(
@@ -1781,6 +1840,7 @@ export function TenantProvider({ children }: { children: ReactNode }) {
       provisionStaff,
       setStaffAccess,
       resetStaffPassword,
+      updateTenantProfile,
       changeOwnPassword,
       recordMeasurement,
       itemById: (id) => ds.inventory.find((i) => i.id === id)!,
@@ -1828,6 +1888,7 @@ export function TenantProvider({ children }: { children: ReactNode }) {
     provisionStaff,
     setStaffAccess,
     resetStaffPassword,
+    updateTenantProfile,
     changeOwnPassword,
     recordMeasurement,
   ]);

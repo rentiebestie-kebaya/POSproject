@@ -1,18 +1,24 @@
 "use client";
 
 import { useState, type FormEvent } from "react";
-import { Store, UserPlus, Users } from "lucide-react";
+import Link from "next/link";
+import { Pencil, Store, UserPlus, Users } from "lucide-react";
+import { ShopProfileForm } from "../components/ShopProfileForm";
 import { Card, PageHeader } from "../components/Ui";
 import { useTenant, type StaffProvisionInput } from "../data/store";
 import { BILLING_STATUS_LABEL, ONBOARDING_STATUS_LABEL, PLAN_LABEL, ROLE_LABEL, STORE_STATUS_LABEL } from "../data/mock";
 import { limitText } from "../data/plans";
 
 export default function Settings() {
-  const { tenant, team, planRules, user, provisionStaff, setStaffAccess, resetStaffPassword } = useTenant();
+  const { tenant, team, planRules, user, provisionStaff, setStaffAccess, resetStaffPassword, updateTenantProfile } = useTenant();
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [role, setRole] = useState<StaffProvisionInput["role"]>("cashier");
+  const [editingProfile, setEditingProfile] = useState(false);
+  const [profileSaving, setProfileSaving] = useState(false);
+  const [profileError, setProfileError] = useState<string | null>(null);
+  const [profileMessage, setProfileMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -20,6 +26,7 @@ export default function Settings() {
   const [resettingId, setResettingId] = useState<string | null>(null);
   const [newPassword, setNewPassword] = useState("");
   const canProvisionStaff = user.role === "owner";
+  const canEditProfile = user.role === "owner";
   const staffLimitReached = team.length >= planRules.staffLimit;
 
   // The owner can administer staff, but never an owner account and never
@@ -85,34 +92,118 @@ export default function Settings() {
     }
   };
 
+  const onSaveProfile = async (profile: { name: string; location: string; whatsapp: string }) => {
+    if (!canEditProfile || profileSaving) return;
+    setProfileError(null);
+    setProfileMessage(null);
+    setProfileSaving(true);
+    try {
+      await updateTenantProfile(profile);
+      setEditingProfile(false);
+      setProfileMessage("Shop profile saved.");
+    } catch (err) {
+      setProfileError(err instanceof Error ? err.message : "Shop profile could not be saved.");
+    } finally {
+      setProfileSaving(false);
+    }
+  };
+
   return (
     <>
       <PageHeader title="Settings" subtitle="Shop profile and team access." />
 
       <div className="grid gap-4 lg:grid-cols-2">
         <Card className="p-5">
-          <h2 className="mb-4 flex items-center gap-2 text-sm font-semibold">
-            <Store size={15} className="text-ink-3" /> Shop profile
-          </h2>
-          <dl className="space-y-3 text-sm">
-            {[
-              ["Shop name", tenant.name],
-              ["Booking page", tenant.subdomain],
-              ["Store location", tenant.location],
-              ["WhatsApp Business", tenant.whatsapp],
-              ["Plan", PLAN_LABEL[tenant.plan]],
-              ["Billing", BILLING_STATUS_LABEL[tenant.billingStatus]],
-              ["Store status", STORE_STATUS_LABEL[tenant.status]],
-              ["Onboarding", ONBOARDING_STATUS_LABEL[tenant.onboardingStatus]],
-              ["Inventory limit", limitText(planRules.inventoryLimit)],
-              ["Staff limit", `${planRules.staffLimit} total users`],
-            ].map(([k, v]) => (
-              <div key={k} className="flex justify-between gap-4 border-b border-hairline pb-3 last:border-0 last:pb-0">
-                <dt className="text-ink-2">{k}</dt>
-                <dd className="font-medium">{v}</dd>
-              </div>
-            ))}
-          </dl>
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+            <h2 className="flex items-center gap-2 text-sm font-semibold">
+              <Store size={15} className="text-ink-3" /> Shop profile
+            </h2>
+            {canEditProfile && !editingProfile && (
+              <button
+                type="button"
+                onClick={() => {
+                  setEditingProfile(true);
+                  setProfileError(null);
+                  setProfileMessage(null);
+                }}
+                className="inline-flex items-center gap-1.5 rounded-full border border-hairline px-3 py-1.5 text-xs font-semibold hover:bg-page"
+              >
+                <Pencil size={13} /> Edit profile
+              </button>
+            )}
+          </div>
+
+          {tenant.onboardingStatus !== "complete" && (
+            <Link
+              href="/onboarding"
+              className="mb-4 flex items-center justify-between gap-3 rounded-lg border border-brand-200 bg-brand-50 px-3 py-2.5 text-sm font-medium text-brand-800 hover:bg-brand-100"
+            >
+              <span>Resume setup</span>
+              <span className="text-xs">{ONBOARDING_STATUS_LABEL[tenant.onboardingStatus]}</span>
+            </Link>
+          )}
+
+          {editingProfile ? (
+            <div className="space-y-5">
+              <ShopProfileForm
+                idPrefix="settings-profile"
+                initialProfile={{
+                  name: tenant.name,
+                  location: tenant.location,
+                  whatsapp: tenant.whatsapp,
+                }}
+                submitLabel="Save profile"
+                submitting={profileSaving}
+                error={profileError}
+                onSubmit={onSaveProfile}
+                onCancel={() => {
+                  setEditingProfile(false);
+                  setProfileError(null);
+                }}
+              />
+              <dl className="space-y-3 border-t border-hairline pt-4 text-sm">
+                {[
+                  ["Booking page", tenant.subdomain],
+                  ["Plan", PLAN_LABEL[tenant.plan]],
+                  ["Billing", BILLING_STATUS_LABEL[tenant.billingStatus]],
+                  ["Store status", STORE_STATUS_LABEL[tenant.status]],
+                  ["Onboarding", ONBOARDING_STATUS_LABEL[tenant.onboardingStatus]],
+                  ["Inventory limit", limitText(planRules.inventoryLimit)],
+                  ["Staff limit", `${planRules.staffLimit} total users`],
+                ].map(([k, v]) => (
+                  <div key={k} className="flex justify-between gap-4 border-b border-hairline pb-3 last:border-0 last:pb-0">
+                    <dt className="text-ink-2">{k}</dt>
+                    <dd className="font-medium">{v}</dd>
+                  </div>
+                ))}
+              </dl>
+            </div>
+          ) : (
+            <>
+              {profileMessage && (
+                <p className="mb-4 rounded-lg bg-success/10 px-3 py-2 text-sm text-success">{profileMessage}</p>
+              )}
+              <dl className="space-y-3 text-sm">
+                {[
+                  ["Shop name", tenant.name],
+                  ["Booking page", tenant.subdomain],
+                  ["Store location", tenant.location],
+                  ["WhatsApp Business", tenant.whatsapp],
+                  ["Plan", PLAN_LABEL[tenant.plan]],
+                  ["Billing", BILLING_STATUS_LABEL[tenant.billingStatus]],
+                  ["Store status", STORE_STATUS_LABEL[tenant.status]],
+                  ["Onboarding", ONBOARDING_STATUS_LABEL[tenant.onboardingStatus]],
+                  ["Inventory limit", limitText(planRules.inventoryLimit)],
+                  ["Staff limit", `${planRules.staffLimit} total users`],
+                ].map(([k, v]) => (
+                  <div key={k} className="flex justify-between gap-4 border-b border-hairline pb-3 last:border-0 last:pb-0">
+                    <dt className="text-ink-2">{k}</dt>
+                    <dd className="font-medium">{v}</dd>
+                  </div>
+                ))}
+              </dl>
+            </>
+          )}
         </Card>
 
         <Card className="p-5">

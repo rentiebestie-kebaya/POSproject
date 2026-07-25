@@ -1,5 +1,11 @@
 import { isDomainRole, type Auth } from "./auth";
 import { normalizePhone } from "./phone.js";
+import {
+  ShopProfileValidationError,
+  validateShopLocation,
+  validateShopName,
+  validateShopWhatsapp,
+} from "./shop-profile";
 import { buildFinanceSummary, type FinanceSummary, type FinanceSummaryOptions } from "../data/finance";
 import { rulesForTenant } from "../data/plans";
 import type {
@@ -78,6 +84,17 @@ export interface StaffProvisionSession {
 export interface StaffProvisionReceipt {
   user: User;
   team: User[];
+}
+
+export interface TenantProfilePatchInput {
+  name?: string;
+  location?: string;
+  whatsapp?: string;
+  onboardingStatus?: Tenant["onboardingStatus"];
+}
+
+export interface TenantProfileReceipt {
+  tenant: Tenant;
 }
 
 export interface StaffAccessInput {
@@ -317,6 +334,7 @@ const READABLE_ID_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const MAX_INVENTORY_PHOTOS = 10;
 const PAYMENT_METHODS: PaymentMethod[] = ["QRIS", "GoPay", "OVO", "DANA", "Cash", "Card"];
 const STAFF_PROVISION_ROLES = ["cashier", "fitting"] as const;
+const TENANT_PROFILE_KEYS = new Set(["name", "location", "whatsapp", "onboardingStatus"]);
 
 function generateReadableId(prefix: string): string {
   const bytes = new Uint8Array(6);
@@ -465,6 +483,40 @@ function staffProvisionFields(input: unknown): StaffProvisionFields {
   const role = staffProvisionRole(row.role);
   if (password.length < 8) throw new InventoryActionError(400, "Initial password must be at least 8 characters.");
   return { email, password, name, role };
+}
+
+function tenantProfileFields(input: unknown): TenantProfilePatchInput {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    throw new InventoryActionError(400, "Invalid tenant profile payload.");
+  }
+  const row = input as Row;
+  const unsupportedKeys = Object.keys(row).filter((key) => !TENANT_PROFILE_KEYS.has(key));
+  if (unsupportedKeys.length > 0) throw new InventoryActionError(400, "Invalid tenant profile payload.");
+
+  const hasProfileField = "name" in row || "location" in row || "whatsapp" in row;
+  const hasOnboardingStatus = "onboardingStatus" in row;
+  if (!hasProfileField && !hasOnboardingStatus) throw new InventoryActionError(400, "Nothing to update.");
+
+  const patch: TenantProfilePatchInput = {};
+  try {
+    if ("name" in row) patch.name = validateShopName(str(row.name));
+    if ("location" in row) patch.location = validateShopLocation(str(row.location));
+    if ("whatsapp" in row) patch.whatsapp = validateShopWhatsapp(str(row.whatsapp));
+  } catch (error) {
+    if (error instanceof ShopProfileValidationError) {
+      throw new InventoryActionError(400, error.message);
+    }
+    throw error;
+  }
+
+  if (hasOnboardingStatus) {
+    if (row.onboardingStatus !== "complete") {
+      throw new InventoryActionError(400, "Onboarding status can only be marked complete.");
+    }
+    patch.onboardingStatus = "complete";
+  }
+
+  return patch;
 }
 
 function accountPasswordFields(input: unknown): AccountPasswordInput {
@@ -666,6 +718,10 @@ function canWritePosTransaction(session: PosActionSession): boolean {
 }
 
 function canProvisionStaff(session: StaffProvisionSession): boolean {
+  return session.role === "owner";
+}
+
+function canUpdateTenantProfile(session: StaffProvisionSession): boolean {
   return session.role === "owner";
 }
 
@@ -1112,6 +1168,70 @@ export async function handleStaffProvisionRequest(
     return Response.json(receipt);
   } catch (error) {
     const mapped = staffProvisionActionError(error);
+    return jsonError(mapped.message, mapped.status);
+  }
+}
+
+export async function updateTenantProfile(
+  db: D1Database,
+  session: StaffProvisionSession,
+  input: unknown,
+): Promise<TenantProfileReceipt> {
+  if (!canUpdateTenantProfile(session)) {
+    throw new InventoryActionError(403, "Only owners can edit the shop profile.");
+  }
+
+  const fields = tenantProfileFields(input);
+  const assignments: string[] = [];
+  const bindings: unknown[] = [];
+
+  if (fields.name !== undefined) {
+    assignments.push("name = ?");
+    bindings.push(fields.name);
+  }
+  if (fields.location !== undefined) {
+    assignments.push("location = ?");
+    bindings.push(fields.location);
+  }
+  if (fields.whatsapp !== undefined) {
+    assignments.push("whatsapp = ?");
+    bindings.push(fields.whatsapp);
+  }
+  if (fields.onboardingStatus !== undefined) {
+    assignments.push("onboarding_status = ?");
+    bindings.push(fields.onboardingStatus);
+  }
+  assignments.push("updated_at = CURRENT_TIMESTAMP");
+
+  try {
+    await db
+      .prepare(`UPDATE tenants SET ${assignments.join(", ")} WHERE id = ?`)
+      .bind(...bindings, session.tenantId)
+      .run();
+
+    const tenantRow = await db.prepare(`SELECT * FROM tenants WHERE id = ?`).bind(session.tenantId).first<Row>();
+    if (!tenantRow) throw new InventoryActionError(404, "Tenant not found.");
+    return { tenant: toTenant(tenantRow) };
+  } catch (error) {
+    if (error instanceof InventoryActionError) throw error;
+    throw new InventoryActionError(500, "Shop profile could not be saved.");
+  }
+}
+
+export async function handleTenantProfileRequest(
+  request: Request,
+  session: StaffProvisionSession | null,
+  db: D1Database,
+): Promise<Response> {
+  if (!session) return jsonError("Unauthorized", 401);
+  if (!canUpdateTenantProfile(session)) return jsonError("Only owners can edit the shop profile.", 403);
+  try {
+    return Response.json(await updateTenantProfile(db, session, await request.json()));
+  } catch (error) {
+    const mapped =
+      error instanceof InventoryActionError
+        ? error
+        : new InventoryActionError(500, "Shop profile could not be saved.");
     return jsonError(mapped.message, mapped.status);
   }
 }

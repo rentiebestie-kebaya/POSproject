@@ -1,52 +1,109 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
-import { ArrowRight, Building2, CalendarDays, Check, Shirt, Wallet } from "lucide-react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { ArrowLeft, ArrowRight, Building2, CalendarDays, Check, Copy, PackagePlus } from "lucide-react";
 import { Card } from "../components/Ui";
+import { ShopProfileForm } from "../components/ShopProfileForm";
 import { useTenant } from "../data/store";
-import { BILLING_STATUS_LABEL, PLAN_LABEL } from "../data/mock";
-import { limitText } from "../data/plans";
+import { PLAN_LABEL } from "../data/mock";
+import { shopProfileIsValid, type ShopProfileFields } from "@/lib/shop-profile";
 
-const STEPS = [
-  {
-    icon: Building2,
-    title: "Confirm store profile",
-    body: "Store name, location, WhatsApp, and setup details are already created from signup.",
-  },
-  {
-    icon: Wallet,
-    title: "Review plan",
-    body: "Your selected plan controls inventory, staff, booking, finance, exports, and branding.",
-  },
-  {
-    icon: Shirt,
-    title: "Add first inventory",
-    body: "Start with the pieces you rent most often so POS and availability are useful immediately.",
-  },
-  {
-    icon: CalendarDays,
-    title: "Set booking workflow",
-    body: "Manual reservations and public booking depend on your plan.",
-  },
-];
+type SetupStep = "profile" | "inventory" | "booking";
+
+const STEP_ORDER: SetupStep[] = ["profile", "inventory", "booking"];
+const STEP_META: Record<SetupStep, { label: string; icon: typeof Building2 }> = {
+  profile: { label: "Profile", icon: Building2 },
+  inventory: { label: "Inventory", icon: PackagePlus },
+  booking: { label: "Booking", icon: CalendarDays },
+};
+
+function stepFromParam(value: string | null): SetupStep {
+  return value === "inventory" || value === "booking" ? value : "profile";
+}
 
 export default function Onboarding() {
-  const { isAuthenticated, platform, planRules, sessionReady, tenant } = useTenant();
+  const { isAuthenticated, planRules, sessionReady, tenant, updateTenantProfile } = useTenant();
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const initialStep = stepFromParam(searchParams.get("step"));
+  const [step, setStep] = useState<SetupStep>(initialStep);
+  const [profileSaved, setProfileSaved] = useState(
+    initialStep !== "profile" && shopProfileIsValid({
+      name: tenant.name,
+      location: tenant.location,
+      whatsapp: tenant.whatsapp,
+    }),
+  );
+  const [savingProfile, setSavingProfile] = useState(false);
+  const [finishing, setFinishing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
 
   useEffect(() => {
     if (!sessionReady) return;
     if (!isAuthenticated) router.replace("/login");
   }, [isAuthenticated, router, sessionReady]);
 
-  if (!sessionReady || !isAuthenticated) return null;
+  const profile = useMemo<ShopProfileFields>(
+    () => ({
+      name: tenant.name,
+      location: tenant.location,
+      whatsapp: tenant.whatsapp,
+    }),
+    [tenant.location, tenant.name, tenant.whatsapp],
+  );
 
-  const finish = () => {
-    platform.updateTenantOnboardingStatus(tenant.id, "complete");
-    router.replace("/app");
+  const stepIndex = STEP_ORDER.indexOf(step);
+  const bookingLink = `https://${tenant.subdomain}`;
+
+  const moveToStep = (next: SetupStep) => {
+    if (next !== "profile" && !profileSaved) return;
+    setError(null);
+    setStep(next);
+    router.replace(`/onboarding?step=${next}`);
   };
+
+  const saveProfile = async (nextProfile: ShopProfileFields) => {
+    setError(null);
+    setSavingProfile(true);
+    try {
+      await updateTenantProfile(nextProfile);
+      setProfileSaved(true);
+      setStep("inventory");
+      router.replace("/onboarding?step=inventory");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Shop profile could not be saved.");
+    } finally {
+      setSavingProfile(false);
+    }
+  };
+
+  const finish = async () => {
+    if (!profileSaved || finishing) return;
+    setError(null);
+    setFinishing(true);
+    try {
+      await updateTenantProfile({ onboardingStatus: "complete" });
+      router.replace("/app");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Setup could not be completed.");
+      setFinishing(false);
+    }
+  };
+
+  const copyBookingLink = async () => {
+    try {
+      await navigator.clipboard.writeText(bookingLink);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1800);
+    } catch {
+      setCopied(false);
+    }
+  };
+
+  if (!sessionReady || !isAuthenticated) return null;
 
   return (
     <main className="min-h-screen bg-page px-6 py-10">
@@ -58,72 +115,163 @@ export default function Onboarding() {
           <span className="text-base font-semibold tracking-wide">RENTIE</span>
         </Link>
 
-        <div className="grid gap-6 lg:grid-cols-[1fr_360px]">
-          <div>
-            <h1 className="text-3xl font-semibold tracking-tight">Setup your store</h1>
-            <p className="mt-2 max-w-xl text-sm leading-6 text-ink-2">
-              Complete the basics before using the app. You can still edit store details later from Settings.
-            </p>
-
-            <div className="mt-6 grid gap-3">
-              {STEPS.map((step) => {
-                const Icon = step.icon;
-                return (
-                  <Card key={step.title} className="flex gap-4 p-4">
-                    <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-brand-50 text-brand-700">
-                      <Icon size={19} />
-                    </div>
-                    <div>
-                      <h2 className="text-sm font-semibold">{step.title}</h2>
-                      <p className="mt-1 text-sm leading-6 text-ink-2">{step.body}</p>
-                    </div>
-                  </Card>
-                );
-              })}
+        <div className="grid gap-6 lg:grid-cols-[280px_1fr]">
+          <aside className="space-y-4">
+            <div>
+              <h1 className="text-2xl font-semibold tracking-tight">Setup your store</h1>
+              <p className="mt-2 text-sm leading-6 text-ink-2">Finish the required shop profile, then choose what to set up next.</p>
             </div>
-          </div>
+
+            <Card className="p-3">
+              <div className="space-y-1">
+                {STEP_ORDER.map((candidate, index) => {
+                  const Icon = STEP_META[candidate].icon;
+                  const locked = candidate !== "profile" && !profileSaved;
+                  const active = step === candidate;
+                  return (
+                    <button
+                      key={candidate}
+                      type="button"
+                      disabled={locked}
+                      onClick={() => moveToStep(candidate)}
+                      className={`flex w-full items-center justify-between rounded-lg px-3 py-2.5 text-left text-sm transition-colors disabled:opacity-45 ${
+                        active ? "bg-brand-50 font-semibold text-brand-800" : "hover:bg-page"
+                      }`}
+                    >
+                      <span className="flex items-center gap-2">
+                        <Icon size={16} />
+                        {STEP_META[candidate].label}
+                      </span>
+                      {candidate === "profile" && profileSaved ? <Check size={15} /> : <span className="text-xs text-ink-3">{index + 1}</span>}
+                    </button>
+                  );
+                })}
+              </div>
+            </Card>
+          </aside>
 
           <Card className="self-start p-5">
-            <div className="text-xs font-semibold uppercase tracking-wide text-ink-3">New store</div>
-            <h2 className="mt-2 text-xl font-semibold">{tenant.name}</h2>
-            <div className="mt-1 text-sm text-ink-2">{tenant.location}</div>
+            <div className="mb-5 flex flex-wrap items-center justify-between gap-3 border-b border-hairline pb-4">
+              <div>
+                <div className="text-xs font-semibold uppercase tracking-wide text-ink-3">Step {stepIndex + 1} of 3</div>
+                <h2 className="mt-1 text-xl font-semibold">{STEP_META[step].label}</h2>
+              </div>
+              <Link href="/app/settings" className="inline-flex items-center gap-1.5 text-sm font-medium text-ink-2 hover:text-ink">
+                <ArrowLeft size={15} /> Settings
+              </Link>
+            </div>
 
-            <dl className="mt-5 space-y-3 text-sm">
-              <div className="flex justify-between gap-3">
-                <dt className="text-ink-2">Plan</dt>
-                <dd className="font-medium">{PLAN_LABEL[tenant.plan]}</dd>
+            {step === "profile" && (
+              <div className="max-w-xl">
+                <ShopProfileForm
+                  idPrefix="onboarding-profile"
+                  initialProfile={profile}
+                  submitLabel="Save and continue"
+                  submitting={savingProfile}
+                  error={error}
+                  onSubmit={saveProfile}
+                />
               </div>
-              <div className="flex justify-between gap-3">
-                <dt className="text-ink-2">Billing</dt>
-                <dd className="font-medium">{BILLING_STATUS_LABEL[tenant.billingStatus]}</dd>
-              </div>
-              <div className="flex justify-between gap-3">
-                <dt className="text-ink-2">Inventory limit</dt>
-                <dd className="font-medium">{limitText(planRules.inventoryLimit)}</dd>
-              </div>
-              <div className="flex justify-between gap-3">
-                <dt className="text-ink-2">Staff limit</dt>
-                <dd className="font-medium">{planRules.staffLimit} total</dd>
-              </div>
-              <div className="flex justify-between gap-3">
-                <dt className="text-ink-2">Booking page</dt>
-                <dd className="font-medium">{planRules.publicBookingEnabled ? tenant.subdomain : "Locked"}</dd>
-              </div>
-            </dl>
+            )}
 
-            <button
-              type="button"
-              onClick={finish}
-              className="mt-6 flex w-full items-center justify-center gap-2 rounded-xl bg-ink px-4 py-3 text-sm font-semibold text-white hover:bg-brand-900"
-            >
-              Finish setup <ArrowRight size={16} />
-            </button>
-            <Link
-              href="/app/inventory"
-              className="mt-3 flex w-full items-center justify-center gap-2 rounded-xl border border-black/10 bg-white px-4 py-3 text-sm font-semibold hover:bg-brand-50"
-            >
-              <Check size={16} /> Add inventory first
-            </Link>
+            {step === "inventory" && (
+              <div className="space-y-5">
+                <div>
+                  <h3 className="text-base font-semibold">Add your first inventory when ready</h3>
+                  <p className="mt-2 max-w-2xl text-sm leading-6 text-ink-2">
+                    Inventory is optional during setup. The full inventory modal already handles item details, photos, QR codes, and limits.
+                  </p>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <Link
+                    href="/app/inventory?setup=1"
+                    className="inline-flex items-center gap-2 rounded-lg bg-brand-600 px-3 py-2 text-sm font-semibold text-white hover:bg-brand-700"
+                  >
+                    <PackagePlus size={15} /> Open inventory
+                  </Link>
+                  <button
+                    type="button"
+                    onClick={() => moveToStep("booking")}
+                    className="inline-flex items-center gap-2 rounded-lg border border-hairline bg-surface px-3 py-2 text-sm font-semibold hover:bg-page"
+                  >
+                    Skip <ArrowRight size={15} />
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {step === "booking" && (
+              <div className="space-y-5">
+                <div>
+                  <h3 className="text-base font-semibold">Booking workflow</h3>
+                  <p className="mt-2 max-w-2xl text-sm leading-6 text-ink-2">
+                    Manual reservations are created by staff inside RENTIE. Public booking lets customers submit requests from the booking page.
+                  </p>
+                </div>
+
+                <dl className="grid gap-3 text-sm sm:grid-cols-2">
+                  <div className="rounded-lg border border-hairline p-3">
+                    <dt className="text-ink-2">Manual booking</dt>
+                    <dd className="mt-1 font-semibold">{planRules.manualBookingEnabled ? "Available" : `Locked on ${PLAN_LABEL[tenant.plan]}`}</dd>
+                  </div>
+                  <div className="rounded-lg border border-hairline p-3">
+                    <dt className="text-ink-2">Public booking</dt>
+                    <dd className="mt-1 font-semibold">{planRules.publicBookingEnabled ? "Available" : `Locked on ${PLAN_LABEL[tenant.plan]}`}</dd>
+                  </div>
+                </dl>
+
+                <div className="rounded-lg border border-hairline bg-page/60 p-3">
+                  <div className="text-xs font-medium text-ink-3">Booking link</div>
+                  <div className="mt-1 flex flex-wrap items-center gap-2">
+                    <code className="rounded bg-surface px-2 py-1 text-sm">{tenant.subdomain}</code>
+                    <button
+                      type="button"
+                      onClick={copyBookingLink}
+                      className="inline-flex items-center gap-1.5 rounded-lg border border-hairline bg-surface px-2.5 py-1.5 text-xs font-semibold hover:bg-brand-50"
+                    >
+                      {copied ? <Check size={13} /> : <Copy size={13} />} {copied ? "Copied" : "Copy"}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {error && step !== "profile" && (
+              <p className="mt-5 rounded-lg bg-critical/10 px-3 py-2 text-sm text-critical" role="alert">
+                {error}
+              </p>
+            )}
+
+            {step !== "profile" && (
+              <div className="mt-6 flex flex-wrap items-center justify-between gap-3 border-t border-hairline pt-4">
+                <button
+                  type="button"
+                  onClick={() => moveToStep(STEP_ORDER[Math.max(0, stepIndex - 1)])}
+                  className="inline-flex items-center gap-2 rounded-lg border border-hairline bg-surface px-3 py-2 text-sm font-semibold hover:bg-page"
+                >
+                  <ArrowLeft size={15} /> Back
+                </button>
+                <div className="flex flex-wrap gap-2">
+                  {step === "inventory" && (
+                    <button
+                      type="button"
+                      onClick={() => moveToStep("booking")}
+                      className="inline-flex items-center gap-2 rounded-lg border border-hairline bg-surface px-3 py-2 text-sm font-semibold hover:bg-page"
+                    >
+                      Next <ArrowRight size={15} />
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={finish}
+                    disabled={!profileSaved || finishing}
+                    className="inline-flex items-center gap-2 rounded-lg bg-ink px-3 py-2 text-sm font-semibold text-white hover:bg-brand-900 disabled:opacity-60"
+                  >
+                    <Check size={15} /> {finishing ? "Finishing..." : "Finish setup"}
+                  </button>
+                </div>
+              </div>
+            )}
           </Card>
         </div>
       </div>

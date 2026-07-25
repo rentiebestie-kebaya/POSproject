@@ -1,4 +1,5 @@
 import type { Auth } from "./auth";
+import { ShopProfileValidationError, parseShopProfileFields, text } from "./shop-profile";
 
 type SignupPlan = "free" | "starter" | "pro";
 
@@ -31,10 +32,6 @@ class SignupError extends Error {
 
 const PLANS = new Set<SignupPlan>(["free", "starter", "pro"]);
 
-function text(input: Record<string, unknown>, key: string): string {
-  return typeof input[key] === "string" ? input[key].trim() : "";
-}
-
 function slugify(value: string): string {
   return value
     .toLowerCase()
@@ -50,21 +47,25 @@ function parseSignupFields(input: unknown): SignupFields {
   }
 
   const row = input as Record<string, unknown>;
-  const storeName = text(row, "storeName");
+  let profile;
+  try {
+    profile = parseShopProfileFields(row, { name: "storeName", location: "location", whatsapp: "whatsapp" });
+  } catch (error) {
+    if (error instanceof ShopProfileValidationError) throw new SignupError(400, error.message);
+    throw error;
+  }
+  const storeName = profile.name;
   const ownerName = text(row, "ownerName");
   const email = text(row, "email").toLowerCase();
   const password = typeof row.password === "string" ? row.password : "";
-  const location = text(row, "location");
-  const whatsapp = text(row, "whatsapp");
+  const location = profile.location;
+  const whatsapp = profile.whatsapp;
   const plan = text(row, "plan") as SignupPlan;
   const bookingSlug = slugify(text(row, "bookingSlug") || storeName);
 
-  if (storeName.length < 2) throw new SignupError(400, "Store name is required.");
   if (ownerName.length < 2) throw new SignupError(400, "Owner name is required.");
   if (!email || !email.includes("@")) throw new SignupError(400, "Enter a valid email address.");
   if (password.length < 8) throw new SignupError(400, "Password must be at least 8 characters.");
-  if (location.length < 2) throw new SignupError(400, "Store location is required.");
-  if (whatsapp.length < 6) throw new SignupError(400, "WhatsApp number is required.");
   if (!PLANS.has(plan)) throw new SignupError(400, "Choose a valid plan.");
   if (bookingSlug.length < 2) throw new SignupError(400, "Store name cannot create a booking URL.");
 
